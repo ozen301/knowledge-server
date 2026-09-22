@@ -1,6 +1,7 @@
 # Implementation plan
 
-Status: agreed plan, 2026-09-17. Implementation has not started.
+Status: agreed plan, 2026-09-17. Task 1 has established the package scaffold
+and SDK compatibility check. The Phase 1 tools remain unimplemented.
 
 ## Outcome
 

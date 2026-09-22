@@ -1,6 +1,11 @@
 # Implementation tasks
 
-Run these sequentially. No task is implemented yet. Tasks 1–6 implement Phase 1; Task 6a records the retrieval evaluation before web integration. Tasks 7–9 outline the user's next priority, web access; finalize route-specific details in Task 7 before coding or deploying that integration. Define tasks for retrieval upgrades from the evaluation findings.
+Run these sequentially. Task 1 is complete: the package scaffold and SDK
+compatibility smoke check are implemented. Tasks 2–6 cover the remaining
+Phase 1 work; Task 6a records the retrieval evaluation before web integration. Tasks 7–9
+outline the user's next priority, web access; finalize route-specific details
+in Task 7 before coding or deploying that integration. Define tasks for
+retrieval upgrades from the evaluation findings.
 
 For each task, follow **Spec -> Tests -> Implementation -> Validation -> Drift prevention** as defined in [AGENTS.md](../AGENTS.md). Establish the behavior and acceptance checks first, express meaningful behavior in tests before implementing it, and finish by checking that the specification, tests, code, and usage instructions agree.
 

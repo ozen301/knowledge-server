@@ -1,7 +1,8 @@
 # Phase 1 tool contract
 
 Status: agreed implementation contract with the pre-implementation questions
-listed below, 2026-09-17. Implementation has not started. Changes should update
+listed below, 2026-09-17. Task 1 has established the package scaffold and SDK
+compatibility check; no Phase 1 tools are implemented. Changes should update
 this document and the corresponding tests together.
 
 Before Task 3, decide the exact BOM/newline representation and whether
