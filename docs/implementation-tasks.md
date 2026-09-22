@@ -193,6 +193,35 @@ Acceptance:
 - Record the operational runbook: start/stop, update/rollback, sync, credential rotation, and connection troubleshooting.
 - Declare completion for the tested client only. Connecting the other provider is a follow-up with its own connectivity/authentication checks.
 
+## Process maintenance — Review orchestration efficiency
+
+This is an ongoing, non-blocking maintenance item rather than a product
+implementation task. Review the orchestration workflow after the next two or
+three substantial orchestrated tasks, and repeat the review when the same
+friction appears across multiple runs. Do not delay the next implementation
+task unless the review exposes a correctness, security, or privacy risk.
+
+Use evidence from actual runs: elapsed time, delegated-agent count, retries,
+duplicate repository inspection or validation, weak handoffs, blocked commands,
+and which internal or external review findings changed the result. Inspect the
+repository skill, agent assignments, helper scripts or CLI invocations,
+model-role choices, validation ownership, waiting behavior, and sandbox or
+approval handling.
+
+Update [the orchestration skill](../.agents/skills/orchestrated-implementation/SKILL.md)
+and its references only when the evidence supports a concrete improvement.
+Keep private prompts, logs, credentials, note contents, and personal paths out
+of the repository; record sanitized conclusions only.
+
+Review outcome:
+
+- Repeated inefficiencies and their causes are recorded without private data.
+- Any changed workflow rule has a demonstrated reason and reduces a specific
+  cost or risk.
+- The skill validator and documentation checks pass after changes.
+- One-off incidents do not become permanent requirements without broader
+  evidence.
+
 ## Reusable prompt for a coding session
 
 ```text
