@@ -7,10 +7,11 @@ name = "knowledge-server"
 version = "0.1.0"
 description = "Read-only MCP server for a personal knowledge base."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 license = { text = "MIT" }
 dependencies = [
     "mcp>=2.2,<3",
+    "pydantic>=2,<3",
 ]
 
 [dependency-groups]
@@ -25,11 +26,11 @@ packages = ["src/knowledge_server"]
 
 [tool.pyright]
 include = ["src", "tests"]
-pythonVersion = "3.13"
+pythonVersion = "3.14"
 typeCheckingMode = "basic"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.ruff]
-target-version = "py313"
+target-version = "py314"

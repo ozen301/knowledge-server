@@ -17,10 +17,12 @@ include independent research questions, an unfamiliar dependency or API,
 multiple separable subsystems, or a requested second-opinion review. Handle a
 small documentation edit, localized fix, or straightforward scaffold directly.
 
-When the available models fit these roles, prefer a strong reasoning model such
-as Astra or Sol as owner, Luna for narrow read-only investigation, and Terra for
-bounded implementation. Treat those as role preferences, not requirements;
-preserve an exact model choice when the user specifies one.
+When available, prefer GPT-6 Sol (`gpt-6-sol`) as an economical owner or
+writer, GPT-6 Astra (`gpt-6-astra`) for demanding ownership, and GPT-6 Luna
+(`gpt-6-luna`) for narrow read-only investigation. These are repository role
+preferences, not measured project benchmarks. Treat them as preferences, not
+requirements: preserve an exact user model choice, verify exposed tool IDs, and
+never silently substitute an unavailable model. See the [OpenAI changelog](https://developers.openai.com/api/docs/changelog).
 
 ## Assign bounded roles
 

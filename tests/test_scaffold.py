@@ -1,7 +1,5 @@
 """Smoke tests for the installable package and supported MCP SDK transport."""
 
-from __future__ import annotations
-
 import asyncio
 import importlib.metadata
 import sys

@@ -1,13 +1,34 @@
 # knowledge-server
 MCP server for a personal knowledge base.
 
-Task 1 provides the installable Python package and verifies its MCP SDK
-dependency. The server tools and knowledge-vault access are not implemented
-yet.
+Tasks 1 and 2 provide the installable Python package, verify its MCP SDK
+dependency, and define the shared configuration, typed models, limits, and
+path policy. The server tools and knowledge-vault operations are not
+implemented yet.
+
+## Current core usage
+
+The shared policy can be used by later operations after startup supplies an
+explicit local checkout. This is a Python API example, not a server launch
+command:
+
+```python
+from knowledge_server.config import load_config
+from knowledge_server.core.paths import PathPolicy, TargetKind
+
+config = load_config({"KNOWLEDGE_ROOT": "/path/to/knowledge-vault"})
+policy = PathPolicy(config.root)
+note = policy.resolve("Projects/roadmap.md", TargetKind.FILE)
+```
+
+Paths are root-relative and use `/`. The policy permits non-hidden Markdown
+files regardless of Git ignore rules, so an ignored Markdown note remains
+eligible. It excludes hidden names, symlinks, special files, and non-Markdown
+regular files. Future tasks add the read, list, info, and search operations.
 
 ## Development prerequisites
 
-- Python 3.13 or later.
+- Python 3.14 or later.
 - uv for Python environment and dependency management.
 - ripgrep (`rg`) when Task 4 adds literal text search.
 
@@ -24,10 +45,10 @@ uv run pyright
 uv run pytest
 ```
 
-The declared minimum is Python 3.13. Verify it with the uv-managed interpreter:
+The declared minimum is Python 3.14. Verify it with the uv-managed interpreter:
 
 ```sh
-uv run --python 3.13 --locked --dev pytest
+uv run --python 3.14 --locked --dev pytest
 ```
 
 The resolved MCP SDK version and tested invocation are recorded in the

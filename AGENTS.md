@@ -42,6 +42,9 @@ An agreed task does not require separate approval for each step.
 - Put application code under `src/knowledge_server/`. Core modules must not import the MCP SDK.
 - Use the same file-access checks in all tools.
 - Add parameter and return type hints to module-level functions and public methods.
+- Target Python 3.14 or later. Use native annotation behavior and current stable
+  standard-library features; do not add compatibility scaffolding unless a
+  requirement calls for it.
 - Use pytest for tests, Ruff for formatting and lint checks, and Pyright for type checks.
 - Send diagnostic messages to stderr. Stdout carries MCP messages, so other
   output can break communication. Never log secrets, note contents, or queries.

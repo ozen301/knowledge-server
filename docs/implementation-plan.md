@@ -1,7 +1,9 @@
 # Implementation plan
 
-Status: agreed plan, 2026-09-17. Task 1 has established the package scaffold
-and SDK compatibility check. The Phase 1 tools remain unimplemented.
+Status: agreed plan, updated 2026-09-22. Tasks 1 and 2 have established the
+package scaffold, SDK compatibility check, and shared configuration, models,
+limits, and path policy. The Phase 1 operations and MCP tool wrappers remain
+unimplemented.
 
 ## Outcome
 
@@ -60,6 +62,7 @@ src/knowledge_server/
     core/
         __init__.py
         models.py        # requests, results, and domain errors
+        limits.py        # shared initial resource limits
         paths.py         # shared path and visibility policy
         reader.py        # bounded file loading, read/list/info
         search.py        # controlled ripgrep execution
@@ -69,12 +72,15 @@ src/knowledge_server/
 tests/
     fixtures/vault/      # invented notes only
     test_paths.py
+    test_config.py
+    test_models.py
+    test_core_boundary.py
     test_reader.py
     test_search.py
     test_mcp.py
 ```
 
-Target Python 3.13 or later and initially constrain the official SDK to
+Target Python 3.14 or later and initially constrain the official SDK to
 `mcp>=2.2,<3`. Use pytest, Ruff, and Pyright. The implementation tasks verify
 exact SDK imports, resolved dependency versions, and interpreter compatibility
 when the project is scaffolded; these details should not be assumed from

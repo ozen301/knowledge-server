@@ -1,8 +1,8 @@
 # Implementation tasks
 
-Run these sequentially. Task 1 is complete: the package scaffold and SDK
-compatibility smoke check are implemented. Tasks 2–6 cover the remaining
-Phase 1 work; Task 6a records the retrieval evaluation before web integration. Tasks 7–9
+Run these sequentially. Tasks 1 and 2 are complete: the package scaffold, SDK
+compatibility smoke check, and shared Phase 1 configuration/models/path policy
+are implemented. Tasks 3–6 cover the remaining Phase 1 work; Task 6a records the retrieval evaluation before web integration. Tasks 7–9
 outline the user's next priority, web access; finalize route-specific details
 in Task 7 before coding or deploying that integration. Define tasks for
 retrieval upgrades from the evaluation findings.
@@ -13,7 +13,7 @@ For each task, follow **Spec -> Tests -> Implementation -> Validation -> Drift p
 
 Depends on: no earlier task.
 
-Read the plan and contract. Create the Python package, `pyproject.toml`, `uv.lock`, test setup, Ruff configuration, and Pyright configuration with `typeCheckingMode = "basic"`. Set `requires-python = ">=3.13"` and configure Pyright for Python 3.13, checking application code and tests. Pin the development interpreter through uv; it may be newer than the minimum. Add a short development-command section to README. Keep runtime dependencies to the official MCP SDK and any directly used modeling dependency; no vector/database/web packages.
+Read the plan and contract. Create the Python package, `pyproject.toml`, `uv.lock`, test setup, Ruff configuration, and Pyright configuration with `typeCheckingMode = "basic"`. Set `requires-python = ">=3.14"` and configure Pyright for Python 3.14, checking application code and tests. Pin the development interpreter through uv; it may be newer than the minimum. Add a short development-command section to README. Keep runtime dependencies to the official MCP SDK and any directly used modeling dependency; no vector/database/web packages.
 
 Use a synthetic, temporary SDK smoke check to verify the installed v2 imports and stdio server startup/shutdown. Do not register placeholder production tools. Record the resolved SDK version and supported invocation rather than copying unverified tutorial code.
 
@@ -21,7 +21,7 @@ Acceptance:
 
 - A clean `uv sync --locked --dev` succeeds.
 - Package import, a basic packaging smoke test, Ruff, and type checking pass.
-- `uv run --python 3.13 --locked --dev pytest` passes with a uv-managed Python 3.13 interpreter, confirming the scaffold supports the declared minimum.
+- `uv run --python 3.14 --locked --dev pytest` passes with a uv-managed Python 3.14 interpreter, confirming the scaffold supports the declared minimum.
 - Include the generated lockfile in the task's changes; the project installs without reading a real vault.
 - README clearly distinguishes available commands from features still unimplemented.
 
@@ -129,7 +129,7 @@ can receive the note excerpts returned to its host.
 Acceptance:
 
 - Complete all validation commands in [AGENTS.md](../AGENTS.md), including checks for staged changes and new files.
-- Run the complete suite on the minimum supported version with `uv run --python 3.13 --locked --dev pytest`.
+- Run the complete suite on the minimum supported version with `uv run --python 3.14 --locked --dev pytest`.
 - A synthetic end-to-end question produces a search hit, a read of the cited lines, and a correct source path in the host's answer.
 - Measure search/read timings against the invented notes and record usability gaps without setting a performance guarantee from this small sample.
 - Confirm the server makes no vault writes or Git changes. No network deployment is part of this task.

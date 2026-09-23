@@ -18,8 +18,27 @@ review handoff.
 3. Allow only the inspection commands the reviewer needs. Disable repository
    writes, session persistence, nested delegation, staging, and commits.
 
+## Check network access before a provider request
+
+Before launching an external CLI, inspect the active network permissions. When
+network access is known to be restricted, request the necessary command-scoped
+network approval up front, using Codex `require_escalated` when it applies.
+Keep the selected isolated snapshot and the CLI's read-only tools. Do not send
+a request that is known to fail merely to rediscover the restriction, disable
+the sandbox globally, or change persistent configuration.
+
+When connectivity is unknown, distinguish local CLI initialization and
+authentication status from a successful provider request. Inspect reported
+`api_retry` events and stop a bounded retry loop to diagnose the condition
+before trying again. This is conditional guidance; a review does not always
+need escalation.
+
 For Claude Code, first confirm the installed version supports the flags, then
 adapt this non-interactive command shape:
+
+Claude Opus 5.5 uses the exact model identifier `claude-opus-5-5`. Preserve an
+explicit user selection and the historical identity of the model that performed
+an earlier review. See the [Opus 5.5 overview](https://platform.claude.com/docs/en/models/opus-5-5/overview).
 
 ```sh
 claude --print --model <exact-model> --effort <requested-effort> \
@@ -49,3 +68,8 @@ shape, and whether any fallback or delegated agents were used. The owner must
 check each reported issue against the repository and may reject unsupported or
 out-of-scope suggestions. External review supplements local tests and static
 checks; it does not replace them.
+
+When substantive fixes follow a reviewed snapshot and final independent
+verification is requested, review the delta with the fix dispositions and
+validation evidence. Report whether the final code received external re-review;
+optional nits do not by themselves require another full review loop.

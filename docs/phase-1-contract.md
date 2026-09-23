@@ -1,9 +1,10 @@
 # Phase 1 tool contract
 
-Status: agreed implementation contract with the pre-implementation questions
-listed below, 2026-09-17. Task 1 has established the package scaffold and SDK
-compatibility check; no Phase 1 tools are implemented. Changes should update
-this document and the corresponding tests together.
+Status: agreed implementation contract, updated 2026-09-22. Tasks 1 and 2
+have established the package scaffold, SDK compatibility check, and shared
+configuration/models/path policy; no Phase 1 operations or MCP tools are
+implemented. Changes should update this document and the corresponding tests
+together.
 
 Before Task 3, decide the exact BOM/newline representation and whether
 `next_line` is present after a fully satisfied range when more file content
@@ -16,7 +17,7 @@ silently establish these contract details.
 - `KNOWLEDGE_ROOT` is required and points to the local Git checkout of the knowledge vault. It must identify an existing readable directory and is resolved once on startup. The server reads its files directly; it does not require or inspect Git metadata and does not run Git commands. Example value: `/path/to/knowledge-vault`; replace it with a local absolute path. Never default to the process working directory, home directory, or NAS-hosted Git remote.
 - Root visibility is all non-hidden Markdown notes, as confirmed by the user. Tool arguments cannot expand access beyond the configured root and common policy.
 - API paths use `/`, relative to the configured root. Empty string means the root for list/search only. Accept spaces and Unicode. Preserve case and Unicode spelling; do not URL-decode paths.
-- Reject absolute paths, Windows drive/UNC paths, backslashes, NUL/control characters in Unicode category `Cc`, and `.` or `..` path components. Accept and normalize a single trailing slash for directory arguments. Do not use string-prefix tests for containment; check path components/resolved ancestry.
+- Reject absolute paths, Windows drive/UNC paths, backslashes, NUL/control characters in Unicode category `Cc`, and `.` or `..` path components. Reject repeated or empty internal components and multiple trailing slashes. A single trailing slash is accepted only for directory-capable inputs and requires the final target to be a directory; a trailing slash on a file-only input is invalid. Empty path is accepted only for directory-capable inputs. Do not use string-prefix tests for containment; inspect components with `lstat` before following anything and check resolved ancestry.
 - Reject every symlink below the configured root, including links targeting another in-root file. Reject special files such as FIFOs and devices. Only regular files and real, non-symlink directories are eligible.
 - Reject any hidden component (starting with `.`), including `.git` and `.obsidian`. Files must have a case-insensitive `.md` suffix. Do not expose other file names through listing.
 - `.gitignore`, `.ignore`, global Git ignores, and ripgrep user configuration must not silently change visibility. An eligible ignored Markdown note remains accessible through every tool. Document this explicitly.
@@ -27,6 +28,8 @@ silently establish these contract details.
 - Logs go to stderr and exclude secrets, note contents, and query text, including values embedded in exception messages. Stdout carries only protocol output. No telemetry exporter is configured by the application.
 
 The shared policy determines path visibility; content/size checks determine readability. Listing/info can reveal that a visible file is too large, but hidden or disallowed paths are never exposed.
+
+The configured root must be an explicit absolute existing directory that is readable and searchable. A root symlink may resolve during startup. For a relative API path, validate its lexical form before checking hidden components or filesystem existence. For file-only requests, reject a final non-Markdown suffix as `UNSUPPORTED_TYPE` before any existence check. For requests accepting either a file or directory, such as search, inspect the target first: directories are accepted regardless of suffix, while ordinary non-Markdown files are `UNSUPPORTED_TYPE`. A Markdown directory passed to a file-only request is `NOT_A_FILE`; any regular file passed to a directory target is `NOT_A_DIRECTORY`. Missing otherwise eligible targets are `NOT_FOUND`.
 
 ## Initial limits
 
@@ -148,14 +151,17 @@ Check path policy before reporting existence so hidden/disallowed paths do not b
 - Hidden components and symlinks return `ACCESS_DENIED`.
 - When an operation requires a file, a final path component without a
   case-insensitive `.md` suffix returns `UNSUPPORTED_TYPE`, checked before
-  existence. Directory-capable operations accept visible directories regardless
-  of their suffix; an identified non-Markdown regular file returns
-  `UNSUPPORTED_TYPE`.
+  existence. A request that accepts either a file or directory, such as search,
+  accepts visible directories regardless of suffix and returns
+  `UNSUPPORTED_TYPE` for an identified non-Markdown regular file. A
+  directory-only request, such as list, returns `NOT_A_DIRECTORY` for every
+  regular file.
 - Special files such as FIFOs and devices return `ACCESS_DENIED`.
 - Missing eligible targets return `NOT_FOUND`, including when a file
   disappears before opening.
-- A file supplied where a directory is required returns `NOT_A_DIRECTORY`; a
-  directory supplied where a file is required returns `NOT_A_FILE`.
+- A regular file supplied where a directory is required returns
+  `NOT_A_DIRECTORY`, including a non-Markdown file; a directory supplied where
+  a file is required returns `NOT_A_FILE`.
 - Permission failures return `ACCESS_DENIED`.
 - Explicit oversized read/search targets return `FILE_TOO_LARGE`.
 - Explicit invalid UTF-8 or NUL-containing read/search targets return
