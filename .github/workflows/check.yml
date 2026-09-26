@@ -18,7 +18,7 @@ jobs:
           persist-credentials: false
       # Python 3.14 is both the development pin and the declared minimum. If
       # .python-version moves ahead of 3.14, add a separate run on 3.14.
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           python-version: "3.14"
       - run: scripts/check --ci
