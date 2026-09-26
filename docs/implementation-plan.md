@@ -1,9 +1,7 @@
 # Implementation plan
 
-Status: agreed plan, updated 2026-09-22. Tasks 1 and 2 have established the
-package scaffold, SDK compatibility check, and shared configuration, models,
-limits, and path policy. The Phase 1 operations and MCP tool wrappers remain
-unimplemented.
+Status: agreed plan, updated 2026-09-22. The
+[implementation tasks](implementation-tasks.md) track progress.
 
 ## Outcome
 
@@ -23,9 +21,9 @@ and acceptance checks.
 
 Phase 1 uses Python, uv, ripgrep, and the official MCP Python SDK v2. It exposes
 four read-only tools over stdio: `knowledge_search`, `knowledge_read`,
-`knowledge_list`, and `knowledge_info`. The server reads a local checkout of
-the knowledge vault supplied through `KNOWLEDGE_ROOT`; the NAS-hosted Git
-remote is used for synchronization and is not searchable.
+`knowledge_list`, and `knowledge_info`. The server reads the local vault
+checkout, configured through `KNOWLEDGE_ROOT`; the NAS-hosted Git remote is
+used for synchronization and is not searchable.
 
 Development starts on an Ubuntu VM, with eventual production hosting on
 Unraid. After local validation, the next priority is connecting a ChatGPT or
@@ -52,7 +50,7 @@ MCP SDK. Use ordinary typed functions and data models; avoid a plugin framework,
 dependency-injection container, or generic database abstraction before a
 second backend exists.
 
-The initial package layout is:
+Planned application and test layout (supporting tooling omitted):
 
 ```text
 src/knowledge_server/
@@ -80,17 +78,16 @@ tests/
     test_mcp.py
 ```
 
-Target Python 3.14 or later and initially constrain the official SDK to
-`mcp>=2.2,<3`. Use pytest, Ruff, and Pyright. The implementation tasks verify
-exact SDK imports, resolved dependency versions, and interpreter compatibility
-when the project is scaffolded; these details should not be assumed from
-tutorial code.
+Target Python 3.14 or later and constrain the official SDK to `mcp>=2.2,<3`.
+Use pytest, Ruff, and Pyright. A smoke test in `tests/test_scaffold.py`
+verifies the installed SDK's imports and stdio startup and shutdown. Check SDK
+details against the installed version, not tutorial code.
 
 ## Decisions to preserve
 
-1. **Read the local vault checkout.** Uncommitted and untracked eligible notes are
-   visible. Git history is not searched, and synchronization remains an
-   owner-operated task outside request handling.
+1. **Read the local vault checkout.** Uncommitted and untracked eligible notes
+   are visible. Git history is not searched, and synchronization remains a task
+   for the vault owner, outside request handling.
 2. **Use one visibility policy for every tool.** Hidden paths, symlinks, and
    unsupported types cannot become visible through another tool. Git ignore
    rules are not an authorization system.
@@ -108,11 +105,11 @@ tutorial code.
 7. **Use ripgrep for initial literal search.** Its integration must use the
    shared file policy, bounded subprocess output, deadlines, and cancellation.
 
-Phase 1 assumes the owner controls the local checkout and that concurrent edits
-are trusted. Path checks and symlink rejection protect the tool boundary, but
-they do not isolate the service from a hostile local process running as the
-same OS user. Stronger isolation requires a restricted process or container
-and appropriately limited mounts.
+Phase 1 assumes the vault owner controls the local vault checkout and that
+concurrent edits are trusted. Path checks and symlink rejection protect the
+tool boundary, but they do not isolate the service from a hostile local process
+running as the same OS user. Stronger isolation requires a restricted process
+or container and appropriately limited mounts.
 
 ## Progressive milestones
 
@@ -125,7 +122,7 @@ and appropriately limited mounts.
 | 5. Additional formats | Add one format at a time, likely text-based PDF first | Hits remain traceable to the original file and page or section |
 | 6. Semantic retrieval, if needed | Evaluate multilingual embeddings and hybrid ranking | The saved evaluation improves while exact search and CPU-only operation remain useful |
 | 7. Additional collections | Explicitly configured roots such as notes, papers, and projects | Source identity and filtering are consistent across tools and caches |
-| 8. Controlled writing, optional | Separate proposal or inbox workflow with owner review | Proposals cannot mutate canonical notes through the read-only service |
+| 8. Controlled writing, optional | Separate proposal or inbox workflow with vault-owner review | Proposals cannot mutate canonical notes through the read-only service |
 
 Web access does not depend on vector search or NAS-wide indexing. At that
 milestone, first check the selected account and client capabilities. Prefer a
@@ -134,11 +131,11 @@ authenticated Streamable HTTP endpoint reachable by the selected provider.
 Authentication, source-access policy, TLS, resource limits, and restricted
 runtime mounts are part of remote exposure, not later cleanup.
 
-For production, use a dedicated checked-out vault or read-only materialized
-snapshot. Keep synchronization outside the MCP process and handle conflicts
-explicitly. A bare Git remote alone cannot serve as the readable collection.
-Tasks 7-9 defer route-specific decisions until current provider capabilities
-and the user's account access can be verified.
+For production, use a dedicated local vault checkout or a read-only
+materialized snapshot. Keep synchronization outside the MCP process and handle
+conflicts explicitly. A bare Git remote alone cannot serve as the readable
+collection. Tasks 7-9 defer route-specific decisions until current provider
+capabilities and the vault owner's account access can be verified.
 
 ## Deferred retrieval decisions
 
