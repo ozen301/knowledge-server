@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# Run the repository validation checks and print a summary.
+#
+# Usage: scripts/check [--ci]
+#
+# Checks that do not depend on each other all run, even after a failure. If
+# `uv sync` fails, the checks that need the Python environment are reported as
+# skipped instead of running against an unknown environment. The exit status
+# is 0 only when every check passes.
+#
+# --ci also checks every tracked file for whitespace errors. A clean checkout
+# has no diff, so the ordinary Git whitespace checks find nothing there.
+
+set -uo pipefail
+
+ci=false
+case "${1-}" in
+    "") ;;
+    --ci) ci=true ;;
+    *)
+        echo "usage: scripts/check [--ci]" >&2
+        exit 2
+        ;;
+esac
+
+cd "$(git rev-parse --show-toplevel)" || exit 2
+
+passed=()
+failed=()
+skipped=()
+
+run() {
+    local name=$1
+    shift
+    printf '\n==> %s\n' "$name"
+    if "$@"; then
+        passed+=("$name")
+    else
+        failed+=("$name")
+    fi
+}
+
+# `git diff --check` ignores untracked files, so check them separately.
+# Only regular files are read: a symlink may point outside the repository, and
+# its target's contents must not appear in the output. `grep -I` skips binary
+# files. Only trailing whitespace is checked here.
+check_untracked_whitespace() {
+    local -a files
+    local file status=0
+    mapfile -d '' files < <(git ls-files -z --others --exclude-standard)
+    if ! wait "$!"; then
+        echo "cannot list untracked files" >&2
+        return 1
+    fi
+    for file in "${files[@]}"; do
+        [[ -f $file && ! -L $file ]] || continue
+        grep -nHI '[[:space:]]$' -- "$file"
+        case $? in
+            0) status=1 ;;
+            1) ;;
+            *)
+                echo "cannot inspect: $file" >&2
+                status=1
+                ;;
+        esac
+    done
+    return "$status"
+}
+
+# Compare the empty tree with the working tree so the check covers the full
+# contents of every tracked file, including uncommitted edits.
+check_tracked_whitespace() {
+    git diff --check "$(git hash-object -t tree /dev/null)"
+}
+
+run "uv sync --locked --dev" uv sync --locked --dev
+if [[ ${#failed[@]} -eq 0 ]]; then
+    run "ruff format --check" uv run ruff format --check .
+    run "ruff check" uv run ruff check .
+    run "pyright" uv run pyright
+    run "pytest" uv run pytest
+else
+    skipped+=("ruff format --check" "ruff check" "pyright" "pytest")
+fi
+
+run "git diff --check" git diff --check
+run "git diff --cached --check" git diff --cached --check
+run "untracked-file whitespace" check_untracked_whitespace
+if [[ $ci == true ]]; then
+    run "tracked-file whitespace" check_tracked_whitespace
+fi
+
+printf '\n==> Summary\n'
+for name in "${passed[@]}"; do printf 'passed   %s\n' "$name"; done
+for name in "${skipped[@]}"; do printf 'skipped  %s\n' "$name"; done
+for name in "${failed[@]}"; do printf 'FAILED   %s\n' "$name"; done
+
+[[ ${#failed[@]} -eq 0 && ${#skipped[@]} -eq 0 ]]

@@ -51,7 +51,9 @@ An agreed task does not require separate approval for each step.
 
 ## Validation
 
-After code or configuration changes, run the commands below:
+After code or configuration changes, run `scripts/check`. It runs the
+commands below, checks untracked text files for trailing whitespace, and
+summarizes the results:
 
 ```sh
 uv sync --locked --dev
@@ -63,9 +65,10 @@ git diff --check
 git diff --cached --check
 ```
 
-Check whitespace in new text files too; the Git commands above omit untracked files.
-For documentation-only changes, check whitespace, links, claims, and examples.
-Repeat checks only after further changes or when investigating a failure.
+CI runs `scripts/check --ci` on pushes to `main` only, so validate `dev`
+locally. For documentation-only changes, check whitespace, links, claims, and
+examples. Repeat checks only after further changes or when investigating a
+failure.
 
 When you finish a task, tell the user what changed, why, and which checks
 passed. Identify any failed checks, checks you could not run, and unfinished work.

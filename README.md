@@ -34,8 +34,15 @@ regular files. Future tasks add the read, list, info, and search operations.
 
 ## Development commands
 
-Run these commands from the repository root. They install the pinned dependency
-set and verify the package, SDK smoke check, formatting, linting, and types:
+Run the validation script from the repository root. It installs the pinned
+dependency set, runs formatting, lint, type, and test checks, checks for
+whitespace errors, and summarizes the results:
+
+```sh
+scripts/check
+```
+
+You can also run its main commands individually:
 
 ```sh
 uv sync --locked --dev
@@ -44,6 +51,9 @@ uv run ruff check .
 uv run pyright
 uv run pytest
 ```
+
+GitHub Actions runs `scripts/check --ci` on pushes to `main` only, so run the
+script locally before merging `dev`.
 
 The declared minimum is Python 3.14. Verify it with the uv-managed interpreter:
 

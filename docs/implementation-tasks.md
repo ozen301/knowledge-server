@@ -5,7 +5,9 @@ compatibility smoke check, and shared Phase 1 configuration/models/path policy
 are implemented. Tasks 3–6 cover the remaining Phase 1 work; Task 6a records the retrieval evaluation before web integration. Tasks 7–9
 outline the user's next priority, web access; finalize route-specific details
 in Task 7 before coding or deploying that integration. Define tasks for
-retrieval upgrades from the evaluation findings.
+retrieval upgrades from the evaluation findings. The
+[workflow improvement plan](#workflow-improvement-plan) runs alongside Tasks
+3 and 4; check its status before starting each task.
 
 For each task, follow **Spec -> Tests -> Implementation -> Validation -> Drift prevention** as defined in [AGENTS.md](../AGENTS.md). Establish the behavior and acceptance checks first, express meaningful behavior in tests before implementing it, and finish by checking that the specification, tests, code, and usage instructions agree.
 
@@ -221,6 +223,100 @@ Review outcome:
 - The skill validator and documentation checks pass after changes.
 - One-off incidents do not become permanent requirements without broader
   evidence.
+
+## Workflow improvement plan
+
+This plan, agreed on 2026-09-26, moves repeated mechanical steps into
+scripts, matches delegation to each task's risk, and records enough evidence
+to judge the workflow. Each stage is a separate change. Mark a stage
+**(complete)** in the change that completes it, and revise later stages when
+earlier work shows they need to change.
+
+Order: Stage 1 -> Stage 2 -> Stage 3 -> Stage 4. Stages 5 and 6 wait until
+Task 4 is close.
+
+1. **Validation script and CI.** `scripts/check` and the GitHub Actions
+   workflow exist; see the validation section of [AGENTS.md](../AGENTS.md).
+   Pending: confirm that the first CI run on `main` passes.
+
+2. **Test environment fixture (complete).** `tests/conftest.py` removes
+   `KNOWLEDGE_ROOT` from the test environment. It does not isolate the
+   filesystem; Task 5 tests must still pass the synthetic root explicitly.
+
+3. **Settle the Task 3 read semantics.** The contract already specifies
+   normalized newlines, hashes of the raw bytes, and `next_line` as the next
+   unread line. Resolve only the remaining ambiguity with the owner, using
+   concrete input and output examples. Proposed defaults: remove a leading BOM
+   from returned text, and return `next_line` whenever more content follows,
+   even after a fully satisfied range. Do not add result fields. Then remove
+   the "Before Task 3" note from the contract. The Task 4 snippet question
+   stays open until Task 4.
+
+4. **Task 3 without delegation.** The owner implements Task 3 directly. This
+   run is a baseline for comparison, not evidence about whether delegation
+   works.
+
+5. **Review preparation before the Task 4 review checkpoint.**
+   - Add `references/assignment-template.md` to the orchestration skill. It
+     contains the objective, a task reference with only the criteria specific
+     to the assignment, allowed files, tests to write first, the stopping
+     condition, the handoff format (outcome, evidence, files changed, checks
+     run, open risks), and a short fixed block with the vault, privacy, and
+     commit constraints. `AGENTS.md` remains the canonical source of
+     repository rules. Shorten the reusable prompt below so it refers to
+     `AGENTS.md` and the template.
+   - Add `scripts/review.sh`, which builds the read-only external review
+     command from verified CLI flags. It requires the model and effort as
+     arguments. It records the CLI version, the model that ran, the reviewed
+     revision, and a digest of the exact diff or snapshot it sent, including
+     any untracked files that were explicitly selected. It limits retries,
+     closes stdin, and restricts the reviewer's tools. Recheck the flags only
+     when the CLI version changes.
+   - In the skill, describe models by role (strong owner, economical writer,
+     inexpensive investigator) and keep the exact model identifiers in one
+     mapping. Keep the package-manager cache rule in `SKILL.md`, because it
+     also applies during implementation.
+   - Add an optional reproducer mode: the reviewer works in a separate
+     worktree and supports each finding with the contract requirement and,
+     when practical, a minimal reproducer. The owner confirms that it fails on
+     the reviewed code and passes after the fix. Isolation from a hostile
+     process running as the same OS user is out of scope (see the
+     [implementation plan](implementation-plan.md)); ordinary concurrent
+     changes, such as a file removed before opening, are in scope.
+   - Add the rule for changing the skill: a correctness or privacy problem can
+     justify a new rule after one incident, but efficiency friction must
+     recur first.
+   - The rewritten skill and reference meet these criteria:
+     - The owner resolves decisions that need the user before dependent tests
+       or code. The single-writer rule includes the owner: while a delegated
+       writer works, the owner does not edit the shared working tree.
+     - Required review checkpoints are honored. Additional independent review
+       is allowed when a concrete risk justifies it.
+     - Review inputs are accessible and stable: a stable snapshot of the exact
+       code being reviewed, including explicitly selected uncommitted and
+       untracked changes, and a prompt that names the governing files. Both
+       reviewer CLIs are supported; switching providers is optional.
+     - Reviews have a deadline. Raw output stays outside the repository. A
+       failed or incomplete review is reported as such, never as "no
+       findings."
+
+6. **Closeout records and process review.** After each substantial task, add
+   a record of about three lines to `docs/orchestration-log.md`: the task and
+   revision; the agents and reviews used, with time (mark estimates); and what
+   changed the result, such as accepted or rejected findings, rework, or
+   blocked commands. After Tasks 3 and 4, use these records for the process
+   maintenance review above. Two tasks can show friction but cannot support
+   broad conclusions about models or delegation.
+
+Starting assignments for the remaining Phase 1 tasks. Adjust them when a task
+turns out simpler or riskier than expected:
+
+| Task | Assignment |
+|---|---|
+| 3 | Owner only. |
+| 4 | One investigator for ripgrep behavior, then an external review of process arguments, budgets, and cleanup, trying the reproducer mode. |
+| 5 | The owner reads the installed SDK code first and adds an investigator only if questions remain. Focus on cancellation across the adapter/core boundary. |
+| 6 | The owner, plus the manual check in a real MCP host. |
 
 ## Reusable prompt for a coding session
 
