@@ -1,14 +1,12 @@
 # Phase 1 tool contract
 
-Status: agreed implementation contract, updated 2026-09-22. The
+Status: agreed implementation contract, updated 2026-09-28. The
 [implementation tasks](implementation-tasks.md) track progress. Changes should
 update this document and the corresponding tests together.
 
-Before Task 3, decide the exact BOM/newline representation and whether
-`next_line` is present after a fully satisfied range when more file content
-exists. Before Task 4, decide the exact snippet-window behavior, including a
-match longer than the snippet limit. Do not let an implementation choice
-silently establish these contract details.
+Before Task 4, decide the exact snippet-window behavior, including a match
+longer than the snippet limit. Do not let an implementation choice silently
+establish this contract detail.
 
 ## Configuration and common policy
 
@@ -44,12 +42,18 @@ silently establish these contract details.
   remains accessible through every tool.
 - A listing may show visible ordinary subdirectories even when they contain no
   eligible notes. It must not recurse into them automatically.
-- File contents: strict UTF-8, optional UTF-8 BOM accepted, no NUL bytes.
-  Normalize CRLF to LF for line handling. A final newline does not create an
-  extra empty line. An empty file has zero lines.
-- Enforce the readable/searchable file-size limit below. Read at most that
-  amount plus one sentinel byte rather than trusting a prior stat alone. Larger
-  files may be listed and inspected but are not read or searched.
+- File contents: strict UTF-8, no NUL bytes. A leading UTF-8 byte order mark
+  (BOM) is accepted and is not part of the text, so a file that contains only
+  a BOM is empty. A U+FEFF character elsewhere is ordinary text.
+- Normalize CRLF to LF. After that, LF is the only line boundary: a lone CR
+  and Unicode separators such as U+2028, U+2029, and U+0085 are characters
+  within a line. This keeps line numbers consistent with ripgrep. A final
+  newline does not create an extra empty line: `a\nb` and `a\nb\n` both have
+  two lines, `\n` has one empty line, and an empty file has zero lines.
+- Enforce the readable/searchable file-size limit below on the raw bytes,
+  before BOM removal and CRLF normalization. Read at most that amount plus one
+  sentinel byte rather than trusting a prior stat alone. Larger files may be
+  listed and inspected but are not read or searched.
 - Tool results and tool errors contain no host absolute paths, command lines,
   or raw subprocess stderr. This applies to server-generated metadata; do not
   rewrite path-like text authored inside a note.
@@ -199,19 +203,39 @@ knowledge_read(path: str, start_line: int = 1, end_line: int | null = null)
   are invalid. Clamp the actual end to EOF.
 - Starting after EOF succeeds with empty content and null actual line bounds.
   Return `total_lines` so the caller can recover.
-- Return whole lines, with normalized newlines, within the returned-content
-  byte limit. If necessary, stop before a line and provide continuation. If the
-  first requested line alone exceeds the cap, return `LINE_TOO_LONG` rather
-  than silently slicing it.
-- `next_line` points to the next unread line in the file, or null at EOF.
+- Return whole lines. Every returned line ends with LF, including a last line
+  that has no final newline in the file, so consecutive pages join by
+  concatenation. When no lines are returned, `content` is empty.
+- The returned-content limit counts the UTF-8 bytes of `content`: after BOM
+  removal and CRLF normalization, and including each line's LF. If the next
+  line would exceed the limit, stop before it and provide continuation. If the
+  first requested line alone exceeds the limit, return `LINE_TOO_LONG` rather
+  than silently slicing it. With the 32 KiB limit, a line of 32,767 bytes plus
+  its LF fits; a line of 32,768 bytes does not.
+- `next_line` points to the next unread line whenever the file has more lines,
+  even when the requested range was fully returned. It is null at EOF.
   `truncated` is true only when the byte limit prevented fulfilling the
-  requested range; selecting a small range is not itself truncation.
+  requested range; selecting a small range is not itself truncation. Clamp the
+  requested end to EOF before deciding truncation.
 - Include SHA-256 of the loaded raw bytes as `content_sha256`. This identifies
   the bytes used for this response, including uncommitted edits; it does not
   guarantee a filesystem snapshot.
 
 Result fields: `path`, `content`, `start_line` and `end_line` (actual bounds or
 null), `total_lines`, `next_line`, `truncated`, `content_sha256`.
+
+Examples for a file of ten short lines, unless stated otherwise:
+
+| Request | `start_line`, `end_line` | `next_line` | `truncated` |
+|---|---|---|---|
+| lines 1-5 | 1, 5 | 6 | false |
+| lines 6-10, or `start_line=6` with the default range | 6, 10 | null | false |
+| lines 8-20 | 8, 10 | null | false |
+| `start_line=11` | null, null (`content` is empty) | null | false |
+| lines 1-10, where the byte limit is reached after line 4 | 1, 4 | 5 | true |
+| `start_line=5` in that file, where line 5 alone exceeds the limit | `LINE_TOO_LONG` error | | |
+
+`total_lines` is 10 in each successful case.
 
 ### knowledge_list
 

@@ -7,24 +7,32 @@ read a local Git checkout of the notes without modifying them.
 ## Status
 
 The project is under development. The installable Python package, shared
-configuration, typed models, limits, and path policy exist; the MCP server
-tools are not implemented yet. The
-[implementation tasks](docs/implementation-tasks.md) track progress.
+configuration, typed models, limits, path policy, and the core read, list, and
+info operations exist. Search and the MCP server tools are not implemented
+yet. The [implementation tasks](docs/implementation-tasks.md) track progress.
 
 ## Current core API
 
-The configuration and path policy are available as a Python API for the read,
-list, info, and search operations that later tasks add. This example is not a
-server launch command:
+The configuration, path policy, and core operations are available as a
+Python API. The MCP tools that later tasks add will call these operations. This
+example is not a server launch command:
 
 ```python
 from knowledge_server.config import load_config
-from knowledge_server.core.paths import PathPolicy, TargetKind
+from knowledge_server.core.models import ReadRequest
+from knowledge_server.core.paths import PathPolicy
+from knowledge_server.core.reader import read_note
 
 config = load_config({"KNOWLEDGE_ROOT": "/path/to/knowledge-vault"})
 policy = PathPolicy(config.root)
-note = policy.resolve("Projects/roadmap.md", TargetKind.FILE)
+result = read_note(policy, ReadRequest(path="Projects/roadmap.md", end_line=20))
+print(result.content, result.next_line)
 ```
+
+`read_note`, `list_directory`, and `note_info` in
+`knowledge_server.core.reader` implement the read, list, and info behavior in
+the [specification](docs/phase-1-contract.md). They raise `KnowledgeError`
+with a contract error code when a request fails.
 
 Paths are root-relative and use `/`. The policy permits non-hidden Markdown
 files regardless of Git ignore rules, so an ignored Markdown note remains

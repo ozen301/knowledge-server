@@ -1,14 +1,14 @@
 # Implementation tasks
 
-Run these sequentially. Tasks 1 and 2 are complete: the package scaffold, SDK
-compatibility smoke check, and shared Phase 1 configuration/models/path policy
-are implemented. Tasks 3–6 cover the remaining Phase 1 work; Task 6a records
-the retrieval evaluation before web integration. Tasks 7–9 outline the vault
-owner's next priority, web access; finalize route-specific details in Task 7
-before coding or deploying that integration. Define tasks for retrieval
-upgrades from the evaluation findings. The [workflow improvement
-plan](#workflow-improvement-plan) runs alongside Tasks 3 and 4; check its
-status before starting each task.
+Run these sequentially. Tasks 1–3 are complete: the package scaffold, SDK
+compatibility smoke check, shared Phase 1 configuration/models/path policy, and
+the core read, list, and info operations are implemented. Tasks 4–6 cover the
+remaining Phase 1 work; Task 6a records the retrieval evaluation before web
+integration. Tasks 7–9 outline the vault owner's next priority, web access;
+finalize route-specific details in Task 7 before coding or deploying that
+integration. Define tasks for retrieval upgrades from the evaluation findings.
+The [workflow improvement plan](#workflow-improvement-plan) runs alongside
+Tasks 3 and 4; check its status before starting each task.
 
 For each task, follow **Spec -> Tests -> Implementation -> Validation -> Drift
 prevention** as defined in [AGENTS.md](../AGENTS.md). Establish the behavior
@@ -88,8 +88,8 @@ Non-goals: subprocesses, MCP decorators, user identities or role systems.
 
 Depends on: Task 2.
 
-Resolve the Task 3 BOM/newline and `next_line` questions listed in the contract
-before writing tests.
+The BOM, newline, and `next_line` questions were decided on 2026-09-28 and are
+recorded in the contract.
 
 Implement shared bounded UTF-8 loading and the three core operations in
 `reader.py`. Derive hashes and line counts from the same loaded bytes. Do not
@@ -112,6 +112,20 @@ Acceptance:
 
 Non-goals: Markdown parsing, frontmatter extraction, Obsidian link resolution,
 Git metadata.
+
+Recorded result: `src/knowledge_server/core/reader.py` provides `load_note`,
+the shared bounded loader that Task 4 should reuse, and the `read_note`,
+`list_directory`, and `note_info` operations. The loader opens each path
+component relative to its parent's descriptor with `O_NOFOLLOW`, and the file
+with `O_NONBLOCK`, then checks the opened file's type. A symlink or FIFO
+swapped in after the policy check is therefore rejected. Tests are in
+`tests/test_reader.py`.
+
+Known limitation: if a listed directory is replaced by a symlink between the
+policy check and the scan, the listing can return an empty page instead of
+`ACCESS_DENIED`. Each entry is still checked from the root, so no names from
+outside the root are exposed. Search discovery in Task 4 should consider the
+same race.
 
 ## Task 4 — Literal search through ripgrep
 
@@ -383,26 +397,28 @@ earlier work shows they need to change.
 Order: Stage 1 -> Stage 2 -> Stage 3 -> Stage 4. Stage 5 waits until Task 4
 is close. Stage 6 records start with Task 3.
 
-1. **Validation script and CI.** `scripts/check` and the GitHub Actions
-   workflow exist; see the validation section of [AGENTS.md](../AGENTS.md).
-   Pending: confirm that the first CI run on `main` passes.
+1. **Validation script and CI (complete).** `scripts/check` and the GitHub
+   Actions workflow exist; see the validation section of
+   [AGENTS.md](../AGENTS.md). The first CI run on `main` passed on
+   2026-09-28.
 
 2. **Test environment fixture (complete).** `tests/conftest.py` removes
    `KNOWLEDGE_ROOT` from the test environment. It does not isolate the
    filesystem; Task 5 tests must still pass the synthetic root explicitly.
 
-3. **Settle the Task 3 read semantics.** The contract already specifies
-   normalized newlines, hashes of the raw bytes, and `next_line` as the next
-   unread line. Resolve only the remaining ambiguity with the vault owner,
-   using concrete input and output examples. Proposed defaults: remove a
-   leading BOM from returned text, and return `next_line` whenever more
-   content follows, even after a fully satisfied range. Do not add result
-   fields. Then remove the "Before Task 3" note from the contract. The Task 4
-   snippet question stays open until Task 4.
+3. **Settle the Task 3 read semantics (complete).** The contract already
+   specified normalized newlines, hashes of the raw bytes, and `next_line` as
+   the next unread line. On 2026-09-28 the vault owner accepted these decisions,
+   reviewed with concrete examples: remove a leading BOM from returned text,
+   split lines only at LF, end every returned line with LF, return
+   `next_line` whenever more content follows, and count the byte limit on the
+   returned text. The contract records them with boundary examples. The
+   Task 4 snippet question stays open until Task 4.
 
-4. **Task 3 without delegation.** The coordinating agent implements Task 3
-   directly. This run is a baseline for comparison, not evidence about
-   whether delegation works.
+4. **Task 3 without delegation (complete).** The coordinating agent
+   implements Task 3 directly. This run is a baseline for comparison, not
+   evidence about whether delegation works. At the vault owner's request,
+   GPT-6 Sol reviewed the result.
 
 5. **Orchestration skill rewrite before the Task 4 review checkpoint.**
    Either a Claude or a Codex model may coordinate, so the skill describes
