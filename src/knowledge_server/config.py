@@ -12,13 +12,30 @@ class ConfigurationError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class Config:
-    """Resolved server configuration fixed for the lifetime of the process."""
+    """Server configuration, fixed for the lifetime of the process.
+
+    Attributes:
+        root: The vault root, an absolute path with symlinks resolved.
+    """
 
     root: Path
 
 
 def load_config(environment: Mapping[str, str] | None = None) -> Config:
-    """Load and validate the required absolute root from an environment mapping."""
+    """Load and check the vault root from `KNOWLEDGE_ROOT`.
+
+    Args:
+        environment: Variables to read instead of the process environment.
+            Tests pass a mapping so they never depend on the shell.
+
+    Returns:
+        The configuration with the resolved root.
+
+    Raises:
+        ConfigurationError: If `KNOWLEDGE_ROOT` is missing or empty, is not an
+            absolute path, or does not name an existing directory that the
+            process can read and enter.
+    """
     source = os.environ if environment is None else environment
     raw_root = source.get("KNOWLEDGE_ROOT")
     if not raw_root:

@@ -1,4 +1,20 @@
-"""Shared component-wise path validation and immediate discovery policy."""
+"""The path and visibility policy that every tool applies.
+
+Callers name notes and directories by their path relative to the vault root,
+using "/" as the separator: `Projects/roadmap.md` means the file
+`roadmap.md` in the `Projects` directory of the vault, and an empty path means
+the root itself. This module calls these root-relative paths.
+
+`PathPolicy` turns a root-relative path into a checked filesystem path, or
+raises a `KnowledgeError` with the contract's error code. It checks each path
+component separately and rejects any symlink it finds below the root, so a
+path cannot lead outside the vault. Hidden names (starting with ".") and
+non-Markdown files are never visible.
+
+The checks inspect the filesystem at one moment; a file or directory replaced
+afterward is not detected here. Code that opens files must guard against that
+itself, as `reader.load_note` does.
+"""
 
 import os
 import stat
@@ -12,7 +28,11 @@ from knowledge_server.core.models import DomainErrorCode, KnowledgeError
 
 
 class TargetKind(StrEnum):
-    """The filesystem object kind an operation accepts."""
+    """The kind of filesystem object an operation accepts or found.
+
+    `EITHER` is used only for requests that accept a file or a directory, such
+    as search. A resolved path is always a `FILE` or a `DIRECTORY`.
+    """
 
     FILE = "file"
     DIRECTORY = "directory"
@@ -21,7 +41,14 @@ class TargetKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ResolvedPath:
-    """A visible, non-symlink path resolved from a root-relative API path."""
+    """A visible path that passed the policy checks.
+
+    Attributes:
+        path: Absolute filesystem path below the root.
+        relative_path: Normalized root-relative path, without a trailing slash;
+            empty for the root itself.
+        kind: `FILE` or `DIRECTORY`.
+    """
 
     path: Path
     relative_path: str
@@ -30,14 +57,25 @@ class ResolvedPath:
 
 @dataclass(frozen=True, slots=True)
 class VisibleEntry:
-    """A visible eligible immediate directory child."""
+    """A visible immediate child found while listing a directory.
+
+    Attributes:
+        relative_path: Root-relative path of the child.
+        kind: `FILE` or `DIRECTORY`.
+    """
 
     relative_path: str
     kind: TargetKind
 
 
 class PathPolicy:
-    """Apply the Phase 1 visibility policy under one resolved vault root."""
+    """Apply the path and visibility policy under one vault root.
+
+    Attributes:
+        root: The vault root, fully resolved when the policy is created.
+        immediate_entry_limit: Most entries `discover_immediate` scans in one
+            directory.
+    """
 
     def __init__(
         self,
@@ -45,14 +83,47 @@ class PathPolicy:
         *,
         immediate_entry_limit: int = DEFAULT_LIMITS.max_immediate_directory_entries,
     ) -> None:
+        """Create a policy for a vault root.
+
+        Args:
+            root: Existing vault root directory. A symlink is resolved here,
+                once.
+            immediate_entry_limit: Most entries to scan in one directory.
+
+        Raises:
+            OSError: If the root does not exist or cannot be resolved.
+        """
         self.root = root.resolve(strict=True)
         self.immediate_entry_limit = immediate_entry_limit
 
     def resolve(self, api_path: str, target: TargetKind) -> ResolvedPath:
-        """Resolve one API path after lexical, visibility, and type checks."""
+        """Check a root-relative path and return where it points.
+
+        The checks run in the contract's order: the path's form first, then
+        hidden names, and only then the filesystem. This order keeps hidden or
+        disallowed paths from revealing whether they exist. A `FILE` target's
+        Markdown suffix is checked before the filesystem too; an `EITHER`
+        target's suffix is checked after, because only the filesystem shows
+        whether the path is a file or a directory.
+
+        Args:
+            api_path: Path relative to the root, using "/". Empty means the
+                root and is invalid when `target` is `FILE`.
+            target: The kind of object the operation accepts.
+
+        Returns:
+            The checked path.
+
+        Raises:
+            KnowledgeError: With `INVALID_PATH`, `ACCESS_DENIED`,
+                `UNSUPPORTED_TYPE`, `NOT_FOUND`, `NOT_A_FILE`, or
+                `NOT_A_DIRECTORY` as the contract's error mappings define.
+        """
         components, trailing_slash = self._parse(api_path, target)
         if not components:
             return ResolvedPath(self.root, "", TargetKind.DIRECTORY)
+        # Inspect each component with lstat before descending into it, so a
+        # symlink anywhere in the path is rejected instead of followed.
         current = self.root
         for index, component in enumerate(components):
             is_final = index == len(components) - 1
@@ -73,6 +144,8 @@ class PathPolicy:
         elif target is TargetKind.DIRECTORY:
             if actual_kind is TargetKind.FILE:
                 raise KnowledgeError(DomainErrorCode.NOT_A_DIRECTORY)
+        # For an EITHER target, any visible directory is accepted, but a file
+        # must still be Markdown. (For FILE targets, _parse checked the suffix.)
         elif actual_kind is TargetKind.FILE and not current.name.lower().endswith(
             ".md"
         ):
@@ -80,7 +153,23 @@ class PathPolicy:
         return ResolvedPath(current, "/".join(components), actual_kind)
 
     def discover_immediate(self, api_path: str) -> tuple[VisibleEntry, ...]:
-        """Return visible immediate children after counting every inspected entry."""
+        """Return a directory's visible immediate children, sorted by path.
+
+        Each child is checked with `resolve`, so listing and direct access
+        always agree on what is visible.
+
+        Args:
+            api_path: Root-relative directory path.
+
+        Returns:
+            The visible children, sorted by root-relative path in code-point
+            order.
+
+        Raises:
+            KnowledgeError: With the codes `resolve` raises for the directory,
+                or `DIRECTORY_LIMIT_EXCEEDED` when the directory has more than
+                `immediate_entry_limit` entries, counting hidden ones.
+        """
         directory = self.resolve(api_path, TargetKind.DIRECTORY)
         entries: list[VisibleEntry] = []
         try:
@@ -100,12 +189,19 @@ class PathPolicy:
         return tuple(sorted(entries, key=lambda entry: entry.relative_path))
 
     def _parse(self, api_path: str, target: TargetKind) -> tuple[list[str], bool]:
+        """Check a path's form without touching the filesystem.
+
+        Returns:
+            The path components and whether the path had a trailing slash.
+        """
         if not isinstance(api_path, str):
             raise KnowledgeError(DomainErrorCode.INVALID_PATH)
         if not api_path:
             if target is TargetKind.FILE:
                 raise KnowledgeError(DomainErrorCode.INVALID_PATH)
             return [], False
+        # Reject absolute POSIX paths, Windows UNC paths (\\server\share) and
+        # drive paths ("C:"), backslashes, and control characters.
         if (
             api_path.startswith(("/", "\\\\"))
             or (
@@ -143,6 +239,7 @@ class PathPolicy:
 
     @staticmethod
     def _lstat_mode(path: Path) -> int:
+        """Return a path's file mode without following a symlink."""
         try:
             return path.lstat().st_mode
         except FileNotFoundError:

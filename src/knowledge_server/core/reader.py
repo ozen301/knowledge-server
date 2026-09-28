@@ -1,4 +1,10 @@
-"""Bounded note loading and the read, list, and info operations."""
+"""Bounded note loading and the read, list, and info operations.
+
+Every operation checks the caller's path with `PathPolicy` before touching the
+note. Read and info then load the note with `load_note`, which reads at most
+the file-size limit plus one byte, so an oversized file is detected without
+reading all of it.
+"""
 
 import contextlib
 import hashlib
@@ -24,6 +30,7 @@ from knowledge_server.core.models import (
 from knowledge_server.core.paths import PathPolicy, ResolvedPath, TargetKind
 
 _UTF8_BOM = b"\xef\xbb\xbf"
+# Size of each os.read() call while loading a note.
 _READ_CHUNK_BYTES = 64 * 1024
 
 type UnreadableReason = Literal["too_large", "invalid_text"]
@@ -33,8 +40,16 @@ type UnreadableReason = Literal["too_large", "invalid_text"]
 class LoadedNote:
     """A note's metadata and, when readable, its lines from one bounded load.
 
-    `lines` and `content_sha256` are None exactly when `unreadable_reason` is
-    set. Lines exclude their LF terminators.
+    Attributes:
+        size_bytes: File size reported by the filesystem when the note was
+            opened.
+        modified_at: Last modification time, in UTC.
+        lines: The note's lines without their LF terminators, with a leading
+            BOM removed and CRLF normalized; None when the note is unreadable.
+        content_sha256: SHA-256 of the loaded raw bytes; None when the note is
+            unreadable.
+        unreadable_reason: Why the note cannot be read, or None when it can.
+            `lines` and `content_sha256` are None exactly when this is set.
     """
 
     size_bytes: int
@@ -47,11 +62,24 @@ class LoadedNote:
 def load_note(
     policy: PathPolicy, resolved: ResolvedPath, limits: Limits = DEFAULT_LIMITS
 ) -> LoadedNote:
-    """Load at most the file-size limit plus one byte from a resolved file.
+    """Load a checked note, reading at most the file-size limit plus one byte.
 
-    Raises `KnowledgeError` when the file cannot be opened as a regular file
-    below the policy root. Oversized or invalid text is reported through
-    `unreadable_reason` rather than raised, so metadata remains available.
+    An oversized or invalid-text note is not an error here: it is reported
+    through `unreadable_reason`, so info can still return its metadata. Read
+    turns that reason into an error.
+
+    Args:
+        policy: The policy that checked `resolved`.
+        resolved: A file path returned by `policy.resolve`.
+        limits: Limits that set the largest readable file.
+
+    Returns:
+        The note's metadata and, when readable, its lines and hash.
+
+    Raises:
+        KnowledgeError: `NOT_FOUND` if the file disappeared, `NOT_A_FILE` if
+            it was replaced by a directory, or `ACCESS_DENIED` if it cannot be
+            opened or read or is no longer a regular file.
     """
     fd = _open_below_root(policy.root, resolved.relative_path)
     try:
@@ -80,7 +108,26 @@ def load_note(
 def read_note(
     policy: PathPolicy, request: ReadRequest, limits: Limits = DEFAULT_LIMITS
 ) -> ReadResult:
-    """Return whole lines of a visible note within the line and byte limits."""
+    """Read a range of whole lines from a note.
+
+    The read stops early, with `truncated` set, before a line that would make
+    the content exceed `limits.max_read_content_bytes`.
+
+    Args:
+        policy: The policy for the vault root.
+        request: The note path and line range.
+        limits: Limits for the default and maximum range, content size, and
+            file size.
+
+    Returns:
+        The lines and the position information for continuing the read.
+
+    Raises:
+        KnowledgeError: `INVALID_ARGUMENT` if the range is longer than
+            `limits.max_read_lines`; `FILE_TOO_LARGE`; `INVALID_ENCODING`;
+            `LINE_TOO_LONG` if the first requested line alone exceeds the
+            content limit; or any code from the path checks and loading.
+    """
     start = request.start_line
     if request.end_line is None:
         requested_end = start + limits.default_read_lines - 1
@@ -110,6 +157,8 @@ def read_note(
             content_sha256=note.content_sha256,
         )
 
+    # Add whole lines until the range ends or the next line would exceed the
+    # content limit. `end` is the last line added so far.
     last_requested = min(requested_end, total_lines)
     parts: list[str] = []
     used_bytes = 0
@@ -140,7 +189,24 @@ def read_note(
 def list_directory(
     policy: PathPolicy, request: ListRequest, limits: Limits = DEFAULT_LIMITS
 ) -> ListResult:
-    """Return one page of a visible directory's visible immediate children."""
+    """List one page of a directory's visible immediate children.
+
+    Pages are slices of the sorted listing. A caller gets the next page by
+    passing the result's `next_offset` as the next request's `offset`.
+
+    Args:
+        policy: The policy for the vault root.
+        request: The directory path, offset, and page size.
+        limits: Limits for the largest page.
+
+    Returns:
+        The entries in the page and the offset of the next page.
+
+    Raises:
+        KnowledgeError: `INVALID_ARGUMENT` if `request.limit` is larger than
+            `limits.max_directory_page`, `DIRECTORY_LIMIT_EXCEEDED`, or any
+            code from the path checks.
+    """
     if request.limit > limits.max_directory_page:
         raise KnowledgeError(DomainErrorCode.INVALID_ARGUMENT)
     directory = policy.resolve(request.path, TargetKind.DIRECTORY)
@@ -164,7 +230,20 @@ def list_directory(
 def note_info(
     policy: PathPolicy, request: InfoRequest, limits: Limits = DEFAULT_LIMITS
 ) -> InfoResult:
-    """Return metadata for a visible note, including oversized or invalid text."""
+    """Return metadata for a note, including one too large or invalid to read.
+
+    Args:
+        policy: The policy for the vault root.
+        request: The note path.
+        limits: Limits that set the largest readable file.
+
+    Returns:
+        The note's size, modification time, and, when readable, its line count
+        and hash.
+
+    Raises:
+        KnowledgeError: Any code from the path checks and loading.
+    """
     resolved = policy.resolve(request.path, TargetKind.FILE)
     note = load_note(policy, resolved, limits)
     return InfoResult(
