@@ -82,24 +82,12 @@ work.
 
 ## Validation
 
-After code or configuration changes, run `scripts/check`. It runs the
-commands below, checks untracked text files for trailing whitespace, and
-summarizes the results:
-
-```sh
-uv sync --locked --dev
-uv run ruff format --check .
-uv run ruff check .
-uv run pyright
-uv run pytest
-git diff --check
-git diff --cached --check
-```
-
-CI runs `scripts/check --ci` on pushes to `main` only, so validate `dev`
-locally. For documentation-only changes, check whitespace, links, claims, and
-examples. Repeat checks only after further changes or when investigating a
-failure.
+After code or configuration changes, run `scripts/check`. It installs the
+locked dependencies, runs the formatting, lint, type, and test checks, checks
+for whitespace errors, and summarizes the results. CI runs
+`scripts/check --ci` on pushes to `main` only, so validate `dev` locally. For
+documentation-only changes, check whitespace, links, claims, and examples.
+Repeat checks only after further changes or when investigating a failure.
 
 ## Documentation
 
@@ -140,22 +128,37 @@ Conventions:
   "Bottom Line," and "In short."
 - Keep detailed task progress in `docs/implementation-tasks.md`; other
   documents link to it. The README may summarize the capabilities available
-  now.
+  now. When a task is complete, shorten its entry to what exists, where it is,
+  and what later tasks need to know; Git history keeps the full instructions.
 - Wrap prose at about 80 columns. Tables, code, and long URLs are exempt.
 
 ## Docstrings and comments
 
-Apply the same guidance to docstrings and comments. In docstrings, explain what
-a function or class does and any inputs, return values, or errors that a caller
-needs to understand. In comments, explain reasons or constraints that the code
-does not make clear. Update both when the code's behavior changes.
+Apply the documentation guidance above to docstrings and comments, and write
+them so that the code stays readable and maintainable. Use Google-style
+docstrings; Ruff checks their format.
+
+- Public modules, classes, functions, and methods: write a summary line, then
+  a description of the behavior a caller needs to know, then `Args:`,
+  `Returns:`, and `Raises:` sections. Omit the description when the summary
+  line says enough. Describe a class's fields in an `Attributes:` section.
+  Describe request and result model fields with `Field(description=...)`,
+  because the MCP tool schemas pass these descriptions to callers.
+- Private helpers may omit the docstring when the code explains itself. Add a
+  summary line, and more detail, whenever it helps a reader understand or
+  maintain the code.
+- Describe the code as it is. Do not refer to tasks, plans, or history, which
+  change or disappear and leave the text stale.
+- Comments explain reasons and constraints. When code does something that is
+  not obvious from reading it, a comment may also explain what it does, but
+  first consider whether clearer code would remove the need.
+- Update docstrings and comments when the code's behavior changes.
 
 ## Commits
 
 Commit and push only when the user has authorized those actions for the
-relevant scope. Use
-[Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) for
-commit messages: `type: description` or `type(scope): description`. Omit the
-body for straightforward changes; add one when the reason or consequences need
+relevant scope. Use Conventional Commits for commit messages:
+`type: description` or `type(scope): description`. Omit the body for
+straightforward changes; add one when the reason or consequences need
 explanation beyond the subject. Do not add co-author trailers or other agent
 signatures to commit messages or pull request descriptions.

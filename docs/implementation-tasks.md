@@ -1,14 +1,13 @@
 # Implementation tasks
 
-Run these sequentially. Tasks 1–3 are complete: the package scaffold, SDK
-compatibility smoke check, shared Phase 1 configuration/models/path policy, and
-the core read, list, and info operations are implemented. Tasks 4–6 cover the
-remaining Phase 1 work; Task 6a records the retrieval evaluation before web
-integration. Tasks 7–9 outline the vault owner's next priority, web access;
-finalize route-specific details in Task 7 before coding or deploying that
-integration. Define tasks for retrieval upgrades from the evaluation findings.
-The [workflow improvement plan](#workflow-improvement-plan) runs alongside
-Tasks 3 and 4; check its status before starting each task.
+Run these sequentially. Tasks 1–3 are complete; their entries below keep only
+what exists and what later tasks need. Tasks 4–6 cover the remaining Phase 1
+work; Task 6a records the retrieval evaluation before web integration. Tasks
+7–9 outline the vault owner's next priority, web access; finalize
+route-specific details in Task 7 before coding or deploying that integration.
+Define tasks for retrieval upgrades from the evaluation findings. The
+[workflow improvement plan](#workflow-improvement-plan) runs alongside Task 4;
+check its status before starting each task.
 
 For each task, follow **Spec -> Tests -> Implementation -> Validation -> Drift
 prevention** as defined in [AGENTS.md](../AGENTS.md). Establish the behavior
@@ -16,110 +15,30 @@ and acceptance checks first, express meaningful behavior in tests before
 implementing it, and finish by checking that the specification, tests, code,
 and usage instructions agree.
 
-## Task 1 — Scaffold and verify SDK compatibility
+## Task 1 — Scaffold and verify SDK compatibility (complete)
 
-Depends on: no earlier task.
+The package, `pyproject.toml`, `uv.lock`, and the pytest, Ruff, and Pyright
+configuration exist. The lockfile resolves `mcp` 2.2.0. The smoke test in
+`tests/test_scaffold.py` shows the supported SDK usage: it imports `MCPServer`
+from `mcp.server.mcpserver` and `Client` and `StdioServerParameters` from
+`mcp`, starts a temporary server with `server.run("stdio")`, connects a client,
+and verifies a clean shutdown.
 
-Read the plan and contract. Create the Python package, `pyproject.toml`,
-`uv.lock`, test setup, Ruff configuration, and Pyright configuration with
-`typeCheckingMode = "basic"`. Set `requires-python = ">=3.14"` and configure
-Pyright for Python 3.14, checking application code and tests. Pin the
-development interpreter through uv; it may be newer than the minimum. Add a
-short development-command section to README. Keep runtime dependencies to the
-official MCP SDK and any directly used modeling dependency; no
-vector/database/web packages.
+## Task 2 — Configuration, data models, and shared path policy (complete)
 
-Use a synthetic, temporary SDK smoke check to verify the installed v2 imports
-and stdio server startup/shutdown. Do not register placeholder production
-tools. Record the resolved SDK version and supported invocation rather than
-copying unverified tutorial code.
+`config.py` loads and validates `KNOWLEDGE_ROOT`. `core/models.py` defines the
+request and result models and the domain errors, `core/limits.py` defines each
+limit once, and `core/paths.py` applies the path and visibility policy for
+every tool. Folder allowlists are out of scope; the confirmed scope is all
+non-hidden Markdown.
 
-Acceptance:
+## Task 3 — Bounded read, list, and metadata (complete)
 
-- A clean `uv sync --locked --dev` succeeds.
-- Package import, a basic packaging smoke test, Ruff, and type checking pass.
-- `uv run --python 3.14 --locked --dev pytest` passes with a uv-managed Python
-  3.14 interpreter, confirming the scaffold supports the declared minimum.
-- Include the generated lockfile in the task's changes; the project installs
-  without reading a real vault.
-- README clearly distinguishes available commands from features still
-  unimplemented.
-
-Non-goals: tool implementation, Docker, HTTP, real-vault access.
-
-Recorded result: the lockfile resolves `mcp` 2.2.0. The smoke test in
-`tests/test_scaffold.py` imports `MCPServer` from `mcp.server.mcpserver` and
-`Client` and `StdioServerParameters` from `mcp`. It starts a temporary
-`MCPServer` with `server.run("stdio")`, connects a client over stdio, confirms
-that no tools are registered, and verifies that the server stops cleanly.
-
-## Task 2 — Configuration, data models, and shared path policy
-
-Depends on: Task 1.
-
-Implement config, request/result models, domain errors, and path
-validation/discovery. Define the input/output models from the contract for
-reuse by later tasks. Define each initial limit once and use those definitions
-in both request validation and operations. These values are enforced now and
-reviewed in Task 6a. Centralize visibility and filesystem checks. The confirmed
-scope is all non-hidden Markdown; do not add folder allowlist configuration
-now.
-
-Acceptance:
-
-- Missing/invalid root fails clearly. Relative API paths work with spaces and
-  Unicode.
-- Parameterized tests cover absolute/traversal/hidden/symlink/special-file
-  rejection, extension rules, root-prefix collisions, and directory
-  normalization.
-- Discovery and direct access agree on eligibility, including Git-ignored
-  Markdown.
-- Denial/errors never contain the outside sentinel contents or server-generated
-  absolute paths.
-- Core modules import without importing MCP. No tool can override the
-  configured root.
-
-Review checkpoint: inspect containment checks and symlink handling before
-building on them. This is a code review, not a new permission gate.
-
-Non-goals: subprocesses, MCP decorators, user identities or role systems.
-
-## Task 3 — Bounded read, list, and metadata
-
-Depends on: Task 2.
-
-The BOM, newline, and `next_line` questions were decided on 2026-09-28 and are
-recorded in the contract.
-
-Implement shared bounded UTF-8 loading and the three core operations in
-`reader.py`. Derive hashes and line counts from the same loaded bytes. Do not
-cache source content.
-
-Acceptance:
-
-- Read ranges, EOF, empty files, CRLF/BOM, byte-limit continuation, invalid
-  encoding, oversized files, and huge single lines follow the contract.
-- Listing applies policy before stable sorting and pagination; offset/limit
-  edge cases work.
-- Info returns useful metadata for oversized/invalid-text files without an
-  unbounded read.
-- A changed fixture is reflected in a subsequent call; hashes change with bytes.
-- A file removed before opening produces `NOT_FOUND`; a permission failure
-  produces `ACCESS_DENIED`. Use controlled fixtures or injected I/O failures so
-  these checks also work under privileged test runners.
-- Synthetic vault bytes and directory contents remain unchanged after all
-  operations.
-
-Non-goals: Markdown parsing, frontmatter extraction, Obsidian link resolution,
-Git metadata.
-
-Recorded result: `src/knowledge_server/core/reader.py` provides `load_note`,
-the shared bounded loader that Task 4 should reuse, and the `read_note`,
-`list_directory`, and `note_info` operations. The loader opens each path
-component relative to its parent's descriptor with `O_NOFOLLOW`, and the file
-with `O_NONBLOCK`, then checks the opened file's type. A symlink or FIFO
-swapped in after the policy check is therefore rejected. Tests are in
-`tests/test_reader.py`.
+`core/reader.py` provides the `read_note`, `list_directory`, and `note_info`
+operations and `load_note`, the shared bounded loader that Task 4 should reuse.
+The loader opens each path component relative to its parent's descriptor
+without following symlinks, so a symlink or FIFO swapped in after the policy
+check is rejected.
 
 Known limitation: if a listed directory is replaced by a symlink between the
 policy check and the scan, the listing can return an empty page instead of
@@ -226,8 +145,8 @@ can receive the note excerpts returned to its host.
 
 Acceptance:
 
-- Complete all validation commands in [AGENTS.md](../AGENTS.md), including
-  checks for staged changes and new files.
+- `scripts/check` passes, including its checks for staged changes and new
+  files (see [AGENTS.md](../AGENTS.md)).
 - Run the complete suite on the minimum supported version with
   `uv run --python 3.14 --locked --dev pytest`.
 - A synthetic end-to-end question produces a search hit, a read of the cited
@@ -389,36 +308,18 @@ Review outcome:
 ## Workflow improvement plan
 
 This plan, agreed on 2026-09-26, moves repeated mechanical steps into
-scripts, matches delegation to each task's risk, and records enough evidence
-to judge the workflow. Each stage is a separate change. Mark a stage
-**(complete)** in the change that completes it, and revise later stages when
-earlier work shows they need to change.
+scripts and matches delegation to each task's risk. Each stage is a separate
+change. Mark a stage **(complete)** in the change that completes it, and revise
+later stages when earlier work shows they need to change.
 
-Order: Stage 1 -> Stage 2 -> Stage 3 -> Stage 4. Stage 5 waits until Task 4
-is close. Stage 6 records start with Task 3.
-
-1. **Validation script and CI (complete).** `scripts/check` and the GitHub
-   Actions workflow exist; see the validation section of
-   [AGENTS.md](../AGENTS.md). The first CI run on `main` passed on
-   2026-09-28.
-
-2. **Test environment fixture (complete).** `tests/conftest.py` removes
-   `KNOWLEDGE_ROOT` from the test environment. It does not isolate the
-   filesystem; Task 5 tests must still pass the synthetic root explicitly.
-
-3. **Settle the Task 3 read semantics (complete).** The contract already
-   specified normalized newlines, hashes of the raw bytes, and `next_line` as
-   the next unread line. On 2026-09-28 the vault owner accepted these decisions,
-   reviewed with concrete examples: remove a leading BOM from returned text,
-   split lines only at LF, end every returned line with LF, return
-   `next_line` whenever more content follows, and count the byte limit on the
-   returned text. The contract records them with boundary examples. The
-   Task 4 snippet question stays open until Task 4.
-
-4. **Task 3 without delegation (complete).** The coordinating agent
-   implements Task 3 directly. This run is a baseline for comparison, not
-   evidence about whether delegation works. At the vault owner's request,
-   GPT-6 Sol reviewed the result.
+Stages 1–4 are complete: `scripts/check` and the CI workflow exist (see
+[AGENTS.md](../AGENTS.md)), `tests/conftest.py` removes `KNOWLEDGE_ROOT` from
+the test environment, and Task 3's read semantics were decided and implemented.
+The fixture does not isolate the filesystem, so Task 5 tests must still pass
+the synthetic root explicitly. Task 3 is the comparison baseline for Stage 6:
+the coordinating agent implemented it directly, and at the vault owner's
+request GPT-6 Sol reviewed it; the review found a symlink race that was fixed.
+Stage 5 comes next, before Task 4.
 
 5. **Orchestration skill rewrite before the Task 4 review checkpoint.**
    Either a Claude or a Codex model may coordinate, so the skill describes
@@ -457,9 +358,8 @@ is close. Stage 6 records start with Task 3.
      a plan the user has approved that explicitly calls for an external
      review, such as Task 4's assignment below, counts as advance approval; a
      "Review checkpoint" note in a task means inspection by the coordinating
-     agent. The user can request or
-     skip a review for any change. Under this rule, Task 3 needs no
-     independent review and Task 4's is approved; decide for Task 5 once its
+     agent. The user can request or skip a review for any change. Under this
+     rule, Task 4's independent review is approved; decide for Task 5 once its
      cancellation behavior is understood.
    - **Review procedure.** Replace `references/external-review.md` with a
      procedure that works in both directions: from Claude Code, through the
@@ -536,21 +436,17 @@ is close. Stage 6 records start with Task 3.
        Raw output stays outside the repository. A failed or incomplete review
        is reported as such, never as "no findings."
 
-6. **Closeout records and process review.** After each substantial task,
-   starting with Task 3, add a record of about three lines to
-   `docs/orchestration-log.md`: the task and revision; the agents and reviews
-   used, with time (mark estimates); and what changed the result, such as
-   accepted or rejected findings, rework, or blocked commands. After Tasks 3
-   and 4, use these records for the process maintenance review above. Two
-   tasks can show friction but cannot support broad conclusions about models
-   or delegation.
+6. **Process review.** After Task 4, use the coordinating agent's task
+   reports for the process maintenance review above: the agents and reviews
+   used, their time, and what changed the result, such as accepted or
+   rejected findings, rework, or blocked commands. Tasks 3 and 4 can show
+   friction but cannot support broad conclusions about models or delegation.
 
 Starting assignments for the remaining Phase 1 tasks. Adjust them when a task
 turns out simpler or riskier than expected:
 
 | Task | Assignment |
 |---|---|
-| 3 | Coordinating agent only. |
 | 4 | One investigator for ripgrep behavior, then an external review of process arguments, budgets, and cleanup, trying the reproducer mode. |
 | 5 | The coordinating agent reads the installed SDK code first and adds an investigator only if questions remain. Focus on cancellation across the adapter/core boundary. |
 | 6 | The coordinating agent, plus the vault owner's manual check in a real MCP host. |
