@@ -301,9 +301,10 @@ Review outcome:
 - Repeated inefficiencies and their causes are recorded without private data.
 - Any changed workflow rule has a demonstrated reason and reduces a specific
   cost or risk.
-- The skill validator and documentation checks pass after changes.
-- One-off incidents do not become permanent requirements without broader
-  evidence.
+- The skill-creator validator (`quick_validate.py`) and documentation checks
+  pass after changes.
+- A correctness or privacy problem can justify a new rule after one incident;
+  efficiency friction becomes a rule only after it recurs.
 
 ## Workflow improvement plan
 
@@ -312,129 +313,33 @@ scripts and matches delegation to each task's risk. Each stage is a separate
 change. Mark a stage **(complete)** in the change that completes it, and revise
 later stages when earlier work shows they need to change.
 
-Stages 1–4 are complete: `scripts/check` and the CI workflow exist (see
+Stages 1–5 are complete: `scripts/check` and the CI workflow exist (see
 [AGENTS.md](../AGENTS.md)), `tests/conftest.py` removes `KNOWLEDGE_ROOT` from
 the test environment, and Task 3's read semantics were decided and implemented.
 The fixture does not isolate the filesystem, so Task 5 tests must still pass
 the synthetic root explicitly. Task 3 is the comparison baseline for Stage 6:
 the coordinating agent implemented it directly, and at the vault owner's
 request GPT-6 Sol reviewed it; the review found a symlink race that was fixed.
-Stage 5 comes next, before Task 4.
 
-5. **Orchestration skill rewrite before the Task 4 review checkpoint.**
-   Either a Claude or a Codex model may coordinate, so the skill describes
-   roles and choice principles rather than a fixed provider.
-   - **Roles and models.** Describe the coordinating agent, investigators,
-     writers, and reviewers by responsibility. Keep the exact model
-     identifiers in one mapping with a row for each role and a column for
-     each model family, so the coordinating agent chooses within its own
-     family unless the task calls for another. Prefer a writer that costs
-     less than the coordinating agent and can do the task; the coordinating
-     agent may also implement directly or use a writer at the same price. A
-     writer from the same family is acceptable because the coordinating agent
-     inspects its diff. An explicit user choice of model always applies, and
-     an unavailable model is never silently substituted.
-   - **Review by risk.** For a simple change, the coordinating agent's
-     inspection of the diff and the validation that `AGENTS.md` requires for
-     the change are the review. For an important change, the coordinating
-     agent also recommends an independent review; the owner prefers a
-     reviewer from the other model family for independence. A change is
-     important when a mistake would be costly and could pass the tests: it
-     can weaken security or privacy (path containment, symlinks, visibility),
-     mishandle external processes (arguments, time limits, cleanup), be hard
-     to reverse, or depend on behavior the coordinating agent could not
-     verify, such as unfamiliar SDK semantics. The user can also mark a
-     change as important.
-
-     Importance triggers a recommendation, not authorization. An independent
-     review runs only when the user requests or approves it. When an
-     important change has neither approval nor the user's decision to skip
-     review, the coordinating agent completes the authorized implementation
-     and validation, reports the risk with a proposed reviewer and effort, and
-     marks the task as waiting for a review decision; silence is not
-     approval. For unattended work, the user can approve review in advance
-     for a task or a kind of risk, optionally with a model or cost limit, and
-     the coordinating agent does not ask again within that scope. An entry in
-     a plan the user has approved that explicitly calls for an external
-     review, such as Task 4's assignment below, counts as advance approval; a
-     "Review checkpoint" note in a task means inspection by the coordinating
-     agent. The user can request or skip a review for any change. Under this
-     rule, Task 4's independent review is approved; decide for Task 5 once its
-     cancellation behavior is understood.
-   - **Review procedure.** Replace `references/external-review.md` with a
-     procedure that works in both directions: from Claude Code, through the
-     user-level `ask-codex` skill; from Codex, through the verified
-     `claude --print` command. In both directions:
-     - Freeze the input: write the reviewed diff, including explicitly
-       selected untracked files, to a file outside the repository, and do not
-       edit the working tree until the review ends.
-     - Name the governing files in the prompt. Each finding cites either a
-       violated governing requirement or a concrete failure scenario, gives
-       file and line references, and is marked as a defect or an optional
-       improvement.
-     - Enforce a deadline, keep raw output outside the repository, and report
-       a failed or incomplete review as such, never as "no findings."
-     - Record the requested model and effort, the model that actually ran
-       (or "not verified" when the tool does not report it), the reviewed
-       commit, a digest of the diff file, and the elapsed time.
-     - Allow reviewer sessions that are saved outside the repository, because
-       follow-up questions reuse them. This replaces the current rule against
-       session persistence.
-     Add a wrapper script only for a direction whose tool does not already
-     enforce the deadline, read-only access, closed stdin, and a check for a
-     nonempty answer. `ask-codex` enforces them for the Claude Code
-     direction.
-   - Add `references/assignment-template.md` to the skill. It contains the
-     objective, a task reference with only the criteria specific to the
-     assignment, allowed files, tests to write first, the stopping condition,
-     the handoff format (outcome, evidence, files changed, checks run, open
-     risks), and a short fixed block with the vault, privacy, and commit
-     constraints. `AGENTS.md` remains the canonical source of repository
-     rules. Shorten the reusable prompt below so it refers to `AGENTS.md` and
-     the template.
-   - Add an optional reproducer mode. The reviewer stays read-only: it
-     supports each finding with the requirement or failure scenario and, when
-     practical, proposes a minimal reproducer with its code, command, and
-     expected failure, stating whether it ran the reproducer. A proposed
-     reproducer is not evidence until the coordinating agent runs it. The
-     coordinating agent inspects each reproducer before running it, keeps the
-     proposed text, records any changes it makes, and confirms that the
-     failure shows the claimed defect rather than a setup error. It then
-     confirms that the reproducer passes on the fixed code and reports which
-     claims were confirmed, rejected, or not verified. Use the frozen
-     reviewed checkout by default. Use a separate worktree only to rebuild an
-     earlier snapshot or keep test files apart from other work: create it at
-     the reviewed commit, verify the digest of the diff file, apply the diff,
-     and confirm that the worktree contains the reviewed files, including
-     selected untracked files. Isolation from a hostile process running as
-     the same OS user is out of scope (see the
-     [implementation plan](implementation-plan.md)); ordinary concurrent
-     changes, such as a file removed before opening, are in scope.
-   - Make the skill discoverable by both tools: keep it in `.agents/skills/`
-     for Codex and add a `.claude/skills/orchestrated-implementation`
-     symbolic link for Claude Code.
-   - Keep the package-manager cache rule in `SKILL.md`, because it also
-     applies during implementation.
-   - Add the rule for changing the skill: a correctness or privacy problem can
-     justify a new rule after one incident, but efficiency friction must
-     recur first. Update the process maintenance section and the current
-     skill's recurrence rule to match.
-   - The rewritten skill and reference meet these criteria:
-     - The coordinating agent resolves decisions that need the vault owner
-       before dependent tests or code. The single-writer rule includes the
-       coordinating agent: while a delegated writer works, the coordinating
-       agent does not edit the shared working tree.
-     - Independent review follows the recommendation and approval rule above,
-       which replaces the current skill's permission to add a reviewer on the
-       coordinating agent's own judgment. Approved review checkpoints are
-       honored.
-     - Both coordination directions work without editing the skill, and the
-       instructions for each were tested by at least one real run. In Claude
-       Code, that run shows that the linked skill and its references are
-       discovered and loaded.
-     - Reviews receive a frozen input, have a deadline, and leave a record.
-       Raw output stays outside the repository. A failed or incomplete review
-       is reported as such, never as "no findings."
+5. **Orchestration skill rewrite (complete).** The
+   [skill](../.agents/skills/orchestrated-implementation/SKILL.md) describes
+   roles by responsibility, so either a Claude or a Codex model may
+   coordinate. It was tested on 2026-09-29 by one real review run in each
+   direction. What later work needs to know:
+   - The vault owner invokes the skill and requests independent reviews
+     explicitly; a plan entry is not a review request. The coordinating agent
+     reports risks that tests may miss.
+   - `references/cross-family.md` holds the model identifiers and the tested
+     `codex exec` and `claude --print` commands, with their deadlines, result
+     checks, and resume by ID. `references/review.md` holds the review
+     procedure.
+   - A Codex agent in the read-only sandbox cannot run pytest, and a Codex
+     writer cannot use uv, so the coordinating agent prepares `.venv` and runs
+     the full validation.
+   - `AGENTS.md` tells agents to read repository skills from
+     `.agents/skills/`. The repository has no tool-specific directories; a
+     developer may add a local `.claude/skills/orchestrated-implementation`
+     link and exclude it through `.git/info/exclude`.
 
 6. **Process review.** After Task 4, use the coordinating agent's task
    reports for the process maintenance review above: the agents and reviews
@@ -447,30 +352,19 @@ turns out simpler or riskier than expected:
 
 | Task | Assignment |
 |---|---|
-| 4 | One investigator for ripgrep behavior, then an external review of process arguments, budgets, and cleanup, trying the reproducer mode. |
+| 4 | One investigator for ripgrep behavior. |
 | 5 | The coordinating agent reads the installed SDK code first and adds an investigator only if questions remain. Focus on cancellation across the adapter/core boundary. |
 | 6 | The coordinating agent, plus the vault owner's manual check in a real MCP host. |
 
 ## Reusable prompt for a coding session
 
 ```text
-Implement Task <N> from docs/implementation-tasks.md only.
-Read docs/implementation-plan.md and docs/phase-1-contract.md first.
-Inspect existing code and repository instructions before changing files.
-Follow Spec -> Tests -> Implementation -> Validation -> Drift prevention.
-Resolve decisions the specification leaves open for the vault owner before
-writing dependent tests or code; present options with a recommendation and
-wait for the decision.
-Write tests for new behavior before implementation. For a bug fix, first
-confirm that a test fails because of the bug.
-Reuse established models and helpers; preserve the documented behavior.
-Use synthetic temporary vaults in tests; do not alter the real knowledge vault.
-Implement the task's acceptance checks, run the relevant checks, and stop at
-this task boundary. If a contract contradiction blocks implementation,
-identify it rather than silently changing semantics.
-Report changed files, checks run and results, and any unfinished acceptance
-criteria. Update the specification and usage instructions to match the code.
-Do not implement later milestones or deploy anything.
+Implement Task <N> from docs/implementation-tasks.md only, following
+AGENTS.md. Read docs/implementation-plan.md and docs/phase-1-contract.md
+first. Use the orchestrated-implementation skill when delegating work.
+If a contract contradiction blocks implementation, identify it rather than
+silently changing semantics. Stop at this task boundary; do not implement
+later milestones or deploy anything.
 ```
 
 Keep one coherent diff per task. Commit only when requested or already

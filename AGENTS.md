@@ -7,6 +7,9 @@ describes the architecture and development stages. The
 behavior, and the [implementation tasks](docs/implementation-tasks.md) list the
 work and the checks required to complete it.
 
+Repository skills are in `.agents/skills/<name>/SKILL.md`. When asked to use
+one that your tool does not list, read that file and follow it.
+
 ## Working rules
 
 - Read the relevant files before editing. Check code and test results before
