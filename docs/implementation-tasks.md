@@ -305,7 +305,7 @@ scripts and matches delegation to each task's risk. Each stage is a separate
 change. Mark a stage **(complete)** in the change that completes it, and revise
 later stages when earlier work shows they need to change.
 
-Stages 1–5 are complete: `scripts/check` and the CI workflow exist (see
+Stages 1–6 are complete: `scripts/check` and the CI workflow exist (see
 [AGENTS.md](../AGENTS.md)), `tests/conftest.py` removes `KNOWLEDGE_ROOT` from
 the test environment, and Task 3's read semantics were decided and implemented.
 The fixture does not isolate the filesystem, so Task 5 tests must still pass
@@ -318,9 +318,10 @@ request GPT-6 Sol reviewed it; the review found a symlink race that was fixed.
    roles by responsibility, so either a Claude or a Codex model may
    coordinate. It was tested on 2026-09-29 by one real review run in each
    direction. What later work needs to know:
-   - The vault owner invokes the skill and requests independent reviews
-     explicitly; a plan entry is not a review request. The coordinating agent
-     reports risks that tests may miss.
+   - Independent reviews and other consultations with the other model family
+     run only when the vault owner requests them; a plan entry is not a
+     request. The coordinating agent reports risks that tests may miss. Since
+     Stage 6, it may delegate to its own family without being asked.
    - `references/cross-family.md` holds the model identifiers and the tested
      `codex exec` and `claude --print` commands, with their deadlines, result
      checks, and resume by ID. `references/review.md` holds the review
@@ -333,11 +334,12 @@ request GPT-6 Sol reviewed it; the review found a symlink race that was fixed.
      developer may add a local `.claude/skills/orchestrated-implementation`
      link and exclude it through `.git/info/exclude`.
 
-6. **Process review.** After Task 4, use the coordinating agent's task
-   reports for the process maintenance review above: the agents and reviews
-   used, their time, and what changed the result, such as accepted or
-   rejected findings, rework, or blocked commands. Tasks 3 and 4 can show
-   friction but cannot support broad conclusions about models or delegation.
+6. **Process review (complete).** Reviewed on 2026-09-29 from the Task 3 and
+   Task 4 reports. The coordinating agent may now delegate to its own model
+   family without being asked; consultations and reviews with the other
+   family still need the vault owner's request. `references/review.md` now
+   requires sending a proposed fix back to the reviewer before applying it or
+   asking the vault owner to approve it.
 
 Starting assignments for the remaining Phase 1 tasks. Adjust them when a task
 turns out simpler or riskier than expected:

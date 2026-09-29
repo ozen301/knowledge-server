@@ -1,6 +1,6 @@
 ---
 name: orchestrated-implementation
-description: Coordinate a repository task across agents - read-only investigators, one writer at a time, validation and reporting by the coordinating agent, and an independent review from another model family when the user asks for one. Works when either a Claude or a Codex model coordinates.
+description: Coordinate a repository task across agents - read-only investigators, one writer at a time, validation and reporting by the coordinating agent, and an independent review from another model family when the user asks for one. Use it when the user asks, or when delegating part of a task is worth the handoff cost. Works when either a Claude or a Codex model coordinates.
 ---
 
 # Orchestrated Implementation
@@ -8,6 +8,17 @@ description: Coordinate a repository task across agents - read-only investigator
 `AGENTS.md`, the specification, and the task entry govern the work. The
 coordinating agent remains responsible for scope, correctness, validation, and
 the final report.
+
+## When to orchestrate
+
+You may use this skill without being asked when delegation saves more than it
+costs: for example, independent read-only questions that can run in parallel,
+such as how an external tool behaves, or a bounded edit that a cheaper writer
+can make. Work directly when a handoff would take longer than the work. In the
+report, name the agents that ran and why.
+
+Delegating on your own covers agents of your own model family only. Consult
+or review with the other family only when the user asks.
 
 ## Roles
 
@@ -25,9 +36,9 @@ the final report.
 
 - An explicit user choice of model always applies. Never substitute an
   unavailable model silently; tell the user and choose again.
-- Choose within your own family unless the task calls for another. Prefer a
-  writer that costs less than you and can do the task; you may also implement
-  directly.
+- Choose within your own family unless the user asks for the other one.
+  Prefer a writer that costs less than you and can do the task; you may also
+  implement directly.
 - For models and commands of the other family, see
   [references/cross-family.md](references/cross-family.md).
 

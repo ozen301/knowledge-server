@@ -8,7 +8,9 @@ behavior, and the [implementation tasks](docs/implementation-tasks.md) list the
 work and the checks required to complete it.
 
 Repository skills are in `.agents/skills/<name>/SKILL.md`. When asked to use
-one that your tool does not list, read that file and follow it.
+one that your tool does not list, read that file and follow it. You may use the
+orchestrated-implementation skill without being asked when delegating part of
+a task is worth the handoff cost; the skill states the limits.
 
 ## Working rules
 
