@@ -29,7 +29,7 @@ through three layers:
 MCP host (for example, a desktop AI client)
     | starts the server as a subprocess; messages go over stdin/stdout
     v
-MCP adapter                                              [planned: Task 5]
+MCP adapter                                             [implemented]
     adapter/server.py  - four tool wrappers, schemas, error translation
     __main__.py        - startup checks and stdio launch
     |
@@ -68,14 +68,14 @@ root directory. It raises `ConfigurationError` if the variable is missing or
 does not name an absolute, readable directory. The server never guesses a
 default root. Tests pass a dictionary instead of the real environment.
 
-Used by: the planned startup code in `__main__.py`.
+Used by: the startup code in `__main__.py`.
 
 ### Data models and errors: `core/models.py`
 
 This module defines one request model and one result model for each tool, for
 example `ReadRequest` and `ReadResult`. The models are Pydantic models that
 reject unknown fields and wrong types. The field descriptions are written for
-tool callers, because the adapter will build the MCP tool schemas from these
+tool callers, because the adapter builds the MCP tool schemas from these
 models.
 
 The module also defines `KnowledgeError`, the one exception type that core
@@ -83,7 +83,7 @@ operations raise for an expected failure. Each error has a code from
 `DomainErrorCode`, such as `NOT_FOUND`, and a fixed message. The message never
 contains the path, note text, or other request data.
 
-Used by: every other core module, and the planned adapter.
+Used by: every other core module, and the adapter.
 
 ### Limits: `core/limits.py`
 
@@ -136,7 +136,7 @@ is read, and stops early when the search's byte budget or deadline is
 reached. Because both
 use the same code, search and read accept the same notes.
 
-Used by: `core/search.py` and the planned adapter.
+Used by: `core/search.py` and the adapter.
 
 ### Literal search: `core/search.py`
 
@@ -168,21 +168,42 @@ ripgrep process is killed and reaped on a timeout, a cancellation, or an
 exceeded budget; a further cancellation during the reap waits until the
 process has exited.
 
-### MCP adapter: `adapter/server.py` and `__main__.py` (planned)
+### MCP adapter: `adapter/server.py` and `__main__.py`
 
-Task 5 adds the MCP layer. `__main__.py` will check the configuration and
-that ripgrep is available, and then start the server over stdio. If either
-check fails, the server exits with an error. `adapter/server.py` will register
-the four tools `knowledge_search`, `knowledge_read`, `knowledge_list`, and
-`knowledge_info`. Each tool wrapper will call one core function and convert a
-`KnowledgeError` into an MCP tool error. The adapter will also run slow work
-without blocking the protocol loop, pass cancellation to a running search, and
-turn an unexpected exception into a safe `INTERNAL_ERROR`.
+`__main__.py` is the entry point for the `knowledge-server` command and for
+`python -m knowledge_server`. It loads the configuration, creates the
+`PathPolicy`, and finds `rg` on `PATH`. If any of these fails, it logs a short
+message to stderr and exits with status 1; otherwise it serves the tools over
+stdio until the host closes stdin. Logs go to stderr, so stdout carries only
+MCP messages.
+
+`create_server()` in `adapter/server.py` registers the four tools
+`knowledge_search`, `knowledge_read`, `knowledge_list`, and `knowledge_info`
+on an SDK `MCPServer`. Each tool publishes its request model's schema as the
+input schema and its result model's schema as the output schema. A tool call
+goes through these steps:
+
+1. The request model validates the raw arguments. A rejected argument returns
+   `INVALID_ARGUMENT`.
+2. The tool calls one core function. Read, list, and info run in a worker
+   thread; search is awaited directly, so cancelling the request kills its
+   ripgrep process.
+3. The tool returns the result model, and the SDK sends it as structured
+   content with an equivalent JSON text item. A `KnowledgeError` becomes a
+   tool error whose text is `{"code": ..., "message": ...}`. Any other
+   exception becomes `INTERNAL_ERROR`; the log names only the exception type
+   and source location, because the exception's message can contain note
+   text or paths.
+
+The SDK's usual tool decorator builds its own lenient argument model, which
+would convert `"5"` to `5` and ignore unknown fields. The adapter therefore
+builds the SDK's `Tool` objects directly, with an argument model that passes
+the raw arguments through. These SDK classes are not in its public exports,
+so check the adapter when upgrading the SDK.
 
 ## How a read request flows
 
-This example follows one `knowledge_read` call. The steps through the core
-exist now; the MCP steps are planned.
+This example follows one `knowledge_read` call.
 
 1. **Startup.** The MCP host starts the server with `KNOWLEDGE_ROOT` set to the
    local vault checkout. `load_config()` checks the root once, the server
@@ -191,7 +212,8 @@ exist now; the MCP steps are planned.
 2. **Request.** The agent calls `knowledge_read` with
    `path="Projects/roadmap.md"` and `end_line=20`. The adapter turns the
    arguments into a `ReadRequest`. The model rejects invalid arguments, such as
-   a line range that ends before it starts.
+   a line range that ends before it starts, and the adapter returns
+   `INVALID_ARGUMENT`.
 3. **Path check.** `read_note()` calls `policy.resolve()`. The policy checks
    the path's form, then hidden names, then the filesystem. If any check
    fails, the request stops here with a `KnowledgeError`.
@@ -205,7 +227,8 @@ exist now; the MCP steps are planned.
    hash of the file.
 6. **Response.** The adapter sends the result to the host. If the core raised
    a `KnowledgeError`, the adapter sends an MCP tool error with the error code
-   and its fixed message instead.
+   and its fixed message instead. The result's JSON text and structured
+   content hold the same values.
 
 List and info requests follow the same path check and error handling. The
 contract lists the [limit values](phase-1-contract.md#initial-limits) and

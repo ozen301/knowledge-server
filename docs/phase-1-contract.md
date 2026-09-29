@@ -100,7 +100,11 @@ Reject invalid bounds rather than silently widening requests. Return
 object-shaped typed results. Use the SDK's typed-output support to produce
 successful structured content and its equivalent JSON text representation. Map
 domain failures to MCP tool errors with `isError=true`; let the SDK handle
-malformed protocol requests. [Official tool
+malformed protocol requests. Arguments that do not match a tool's input schema
+or its bounds, including unknown, missing, or wrongly typed fields, are a
+domain failure with `INVALID_ARGUMENT`, not an SDK validation message. Every
+tool is annotated as read-only, non-destructive, idempotent, and closed-world;
+the annotations describe the tools but do not enforce the policy. [Official tool
 specification](https://modelcontextprotocol.io/specification/2026-07-28/server/tools),
 [SDK structured
 output](https://py.sdk.modelcontextprotocol.io/servers/structured-output/).
@@ -344,7 +348,10 @@ knowledge_info(path: str)
 
 ## Error and change behavior
 
-Domain errors have `code` and a short safe `message`. Codes:
+Domain errors have `code` and a short safe `message`. A tool returns a domain
+error as a result with `isError=true` and one text content item that holds
+the JSON object `{"code": "NOT_FOUND", "message": "..."}`; the error result
+has no structured content. Codes:
 `INVALID_ARGUMENT`, `INVALID_PATH`, `NOT_FOUND`, `ACCESS_DENIED`,
 `UNSUPPORTED_TYPE`, `NOT_A_FILE`, `NOT_A_DIRECTORY`, `FILE_TOO_LARGE`,
 `INVALID_ENCODING`, `LINE_TOO_LONG`, `SEARCH_LIMIT_EXCEEDED`,
@@ -372,7 +379,8 @@ become existence probes. Apply these mappings consistently:
   `INVALID_ENCODING`.
 
 Failure to configure the root or locate ripgrep is a startup error with a
-nonzero exit status, not a live half-working server.
+nonzero exit status, not a live half-working server. Startup looks for the
+`rg` executable on the server process's `PATH`.
 
 Use shared error translation in the MCP adapter for all four tools. Translate
 unexpected application exceptions explicitly into a generic `INTERNAL_ERROR`;

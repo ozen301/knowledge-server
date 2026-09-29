@@ -1,8 +1,8 @@
 # Implementation tasks
 
-Run these sequentially. Tasks 1–4 are complete; their entries below keep only
-what exists and what later tasks need. Tasks 5 and 6 cover the remaining
-Phase 1 work; Task 6a records the retrieval evaluation before web
+Run these sequentially. Tasks 1–5 are complete; their entries below keep only
+what exists and what later tasks need. Task 6 covers the remaining Phase 1
+work; Task 6a records the retrieval evaluation before web
 integration. Tasks 7–9 outline the vault owner's next priority, web access;
 finalize route-specific details in Task 7 before coding or deploying that
 integration. Define tasks for retrieval upgrades from the evaluation
@@ -79,40 +79,37 @@ the loading thread can outlive a search that already returned at its
 deadline; and a directory replaced by a symlink during discovery drops its
 notes without counting them.
 
-## Task 5 — Expose the four tools over stdio
+## Task 5 — Expose the four tools over stdio (complete)
 
-Depends on: Tasks 3 and 4.
+`adapter/server.py` registers the four tools on an SDK `MCPServer`, and
+`__main__.py` checks `KNOWLEDGE_ROOT` and finds `rg` on `PATH` before it
+serves them over stdio. `pyproject.toml` defines the `knowledge-server`
+command. On 2026-09-29 the vault owner decided the [error
+result](phase-1-contract.md#error-and-change-behavior) format, that
+rejected arguments return `INVALID_ARGUMENT`, and that startup finds `rg` on
+`PATH`. To meet the second decision, the adapter builds SDK `Tool` objects
+directly instead of using the tool decorator; the
+[architecture overview](architecture.md#mcp-adapter-adapterserverpy-and-__main__py)
+explains why. GPT-6 Sol, consulted at the vault owner's request, agreed with
+this design.
 
-Implement the entry point and thin MCP wrappers in
-`src/knowledge_server/adapter/server.py`. Generate schemas from the typed
-models and use SDK support for successful structured results and their JSON
-text representation. Add clear descriptions, read-only/destructive annotations
-as appropriate, and shared translation of domain errors and unexpected
-application exceptions. Handle blocking work without blocking the async
-protocol loop; cancellation must reach any active search process. Use SDK
-transport/version handling, not handwritten JSON-RPC.
+`tests/test_adapter.py` covers schemas, annotations, successful and empty
+results, argument and domain errors, and injected exceptions in-process, and
+runs the entry point as a real stdio subprocess for the session, clean
+shutdown, stdout content, the absence of TCP sockets, cancellation of a
+search, and startup failures.
 
-Acceptance:
+What Task 6 needs to know:
 
-- A real SDK client starts the server subprocess against a temporary vault,
-  discovers exactly four tools, calls each successfully, and shuts it down
-  cleanly.
-- Discovered input/output schemas agree with the contract; invalid arguments
-  and domain errors are distinguishable from successful empty results.
-- An unexpected exception in each tool produces a safe `INTERNAL_ERROR` with
-  `isError=true`. Inject exceptions containing an absolute path and invented
-  private text; responses expose neither, and logs exclude the private text and
-  query. A subsequent valid call succeeds.
-- Successful structured content and its JSON text representation contain
-  equivalent values.
-- Read-only annotations are present; policy enforcement is tested independently
-  of those annotations.
-- Protocol stdout contains only protocol output. Diagnostic logging does not
-  break tool calls.
-- A failed call does not prevent the next valid call. No HTTP listener opens.
-
-Non-goals: MCP resources/prompts, client sampling, custom protocol negotiation,
-hosted endpoints.
+- The command is `knowledge-server`, run through `uv run --project ...`, or
+  `python -m knowledge_server`. It exits with status 1 and a stderr message
+  when the root is unusable or `rg` is not found on `PATH`, so a host's
+  `PATH` must contain `rg`. Startup does not run `rg`; if it fails when run,
+  searches return `SEARCH_FAILED`.
+- Logging goes to stderr at the WARNING level. An unexpected exception is
+  logged at ERROR with its type and source location only.
+- When upgrading the SDK, check the non-exported classes that
+  `adapter/server.py` imports.
 
 ## Task 6 — Local integration, documentation, and release check
 

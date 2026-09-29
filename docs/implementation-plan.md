@@ -75,7 +75,7 @@ tests/
     test_core_boundary.py
     test_reader.py
     test_search.py
-    test_mcp.py
+    test_adapter.py
 ```
 
 Target Python 3.14 or later and constrain the official SDK to `mcp>=2.2,<3`.

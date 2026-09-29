@@ -8,14 +8,16 @@ read a local Git checkout of the notes without modifying them.
 
 The project is under development. The installable Python package, shared
 configuration, typed models, limits, path policy, and the core search, read,
-list, and info operations exist. The MCP server tools are not implemented
-yet. The [implementation tasks](docs/implementation-tasks.md) track progress.
+list, and info operations exist. The `knowledge-server` command serves the
+four MCP tools over stdio; instructions for registering it with an MCP host
+are not written yet. The [implementation tasks](docs/implementation-tasks.md)
+track progress.
 
 ## Current core API
 
 The configuration, path policy, and core operations are available as a
-Python API. The MCP tools that later tasks add will call these operations. This
-example is not a server launch command:
+Python API, and the MCP tools call these operations. This example is not a
+server launch command:
 
 ```python
 from knowledge_server.config import load_config
