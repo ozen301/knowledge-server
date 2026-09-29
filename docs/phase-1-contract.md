@@ -1,12 +1,8 @@
 # Phase 1 tool contract
 
-Status: agreed implementation contract, updated 2026-09-28. The
+Status: agreed implementation contract, updated 2026-09-29. The
 [implementation tasks](implementation-tasks.md) track progress. Changes should
 update this document and the corresponding tests together.
-
-Before Task 4, decide the exact snippet-window behavior, including a match
-longer than the snippet limit. Do not let an implementation choice silently
-establish this contract detail.
 
 ## Configuration and common policy
 
@@ -93,8 +89,9 @@ without large or slow fixtures.
 The filesystem-entry budgets count every directory entry inspected before
 visibility filtering, but excluded directories are not traversed. The
 source-byte budget counts raw bytes actually loaded while validating candidate
-files, including sentinel bytes and bytes from files later skipped. The
-subprocess-output budget counts stdout and stderr together across all batches.
+files, including sentinel bytes and bytes from files later skipped, even when
+a later read of the file fails. The subprocess-output budget counts stdout and
+stderr together.
 
 ## Tools
 
@@ -134,8 +131,8 @@ knowledge_search(
   relevance score.
 - `max_results` must be at least 1 and at most the search-result maximum. Fetch
   one additional hit to determine result-limit truncation.
-- Snippet: a window within the snippet-length limit centered on the first
-  match's start; include `snippet_truncated`. Paths and line numbers allow a
+- Snippet: a window of the matching line around the first match on that
+  line, as [defined below](#snippet-window). Paths and line numbers allow a
   full read.
 - Search does not paginate initially: narrow the path or query when truncated.
 - Missing/disallowed explicit targets are errors. During recursive search,
@@ -169,19 +166,92 @@ eligible content could not all be searched because files were skipped; it is
 independent of `truncated`. Ordinary policy exclusions do not count as skipped.
 Do not claim an exact total hit count.
 
-Count a discovered file that disappears or becomes inaccessible before it can
-be read as `unreadable`. An explicit target follows the [error
-mappings](#error-and-change-behavior) instead.
+#### Snippet window
 
-Use ripgrep with fixed-string JSON output and argument-list subprocess calls
-(`shell=False`). Pass the query as a value to `-e`; never interpolate it into a
-command. Feed only policy-approved regular files to ripgrep, in bounded
-batches. Use explicit options/environment so user config and ignore files
-cannot alter behavior. Validate text eligibility consistently with the reader
-before emitting hits. Use a shared deadline and stream/cap subprocess output;
-never capture arbitrarily large output and truncate afterward. Exit code 1
-means no matches, not a failure. Kill and reap children on
-timeout/cancellation. The [ripgrep
+The snippet is an exact substring of the matching line, with no ellipsis or
+other marker added. The line is the reader's version of it: without a leading
+BOM or the line ending, and without whitespace trimming. The first match is
+the first occurrence ripgrep reports on the line. Its start and end are code
+point positions derived from ripgrep's reported byte offsets, not from the
+query length, because a case-insensitive match can differ in length from the
+query. With `L` as the snippet-length limit:
+
+- A line of at most `L` code points is the whole snippet.
+- A match of at most `L` code points is shown whole. The remaining space is
+  split as evenly as possible before and after it; an odd extra code point
+  goes after the match. The window then slides to stay inside the line, so a
+  line longer than `L` always gives a snippet of exactly `L` code points.
+- A match longer than `L` code points gives a snippet of its first `L` code
+  points.
+
+As a formula, for a line longer than `L`, with `start` and `length` measured
+in code points:
+
+```text
+if length <= L: start = clamp(match_start - (L - length) // 2, 0, len(line) - L)
+else:           start = match_start
+snippet = line[start : start + L]
+```
+
+`snippet_truncated` is true when the snippet is shorter than the whole line.
+It does not show whether the match itself was cut; that happens only for a
+match longer than `L`, and the caller can read the whole line. Because the
+window counts code points, a cut can split a character made of several code
+points, such as a letter with a combining accent or an emoji sequence.
+
+For example, with `L = 10`, the line `abcdefghijklmnop` and the query `h`
+give `defghijklm`; the query `b` gives `abcdefghij`; the query `o` gives
+`ghijklmnop`.
+
+Count a discovered file that disappears or becomes inaccessible before it can
+be read as `unreadable`. A subdirectory that cannot be scanned also counts as
+one `unreadable` item, because the notes in it could not be searched. An
+explicit target follows the [error mappings](#error-and-change-behavior)
+instead. If a directory is replaced by a symlink after it was checked, its
+entries are rejected when they are checked from the root, so its notes are
+missing from the result without being counted; no name from outside the root
+is exposed.
+
+Search runs in two stages:
+
+1. **Load.** Discover candidate notes through the path policy and load each
+   one with the reader's bounded loader, which opens every path component
+   without following symlinks. Count skipped notes by reason. Only notes that
+   pass the reader's content checks go on to the next stage.
+2. **Match.** Send the loaded text of the eligible notes to one ripgrep process
+   on standard input, in the sorted path order of the results. Each note's text
+   is sent as the reader sees it: without a BOM, with CRLF normalized to LF,
+   and with every line ending in LF. ripgrep never opens a vault file, so a
+   file changed or replaced after loading cannot affect the matches. A
+   reported line number maps back to its note and line; a match cannot cross
+   notes because a query cannot contain a newline. Because the stream is in
+   result order, ripgrep's `--max-count` of `max_results + 1` stops the search
+   as soon as the result is known to be truncated.
+
+Run ripgrep with fixed-string JSON output, `--encoding none` so that it
+reports byte offsets into exactly the bytes sent, and an explicit case option.
+Use argument-list subprocess calls (`shell=False`), and pass the query as a
+value to `-e`; never interpolate it into a command. Use explicit options and a
+minimal environment so user configuration cannot alter behavior. Check that
+each reported line equals the sent line at the reported position before
+building its snippet; an inconsistency is `SEARCH_FAILED`.
+
+Write the input and read standard output and error concurrently, in bounded
+chunks, and check the output budget before keeping more output; never capture
+arbitrarily large output and truncate afterward. ripgrep may stop reading its
+input early after `--max-count`; that is not a failure. Its exit status decides
+the outcome: 0 means matches, 1 means no matches, and any other status or
+signal is `SEARCH_FAILED`. Kill and reap the process on timeout, cancellation,
+or an exceeded budget. A further cancellation that arrives while the killed
+process is being reaped takes effect after the reap. The kill cannot be
+caught or ignored, so only a kernel delay in the process's exit can make this
+wait outlast the deadline.
+
+The deadline starts when the search request starts. Discovery and loading run
+outside the event loop and stop at the next entry, file, or read chunk after
+the deadline or a cancellation. A filesystem call that is already blocked
+cannot be interrupted: the search still returns at the deadline, and the
+background work stops when that call returns. The [ripgrep
 guide](https://github.com/BurntSushi/ripgrep/blob/master/GUIDE.md) is the
 upstream reference.
 
@@ -189,6 +259,9 @@ Enforce the search deadline, visited-entry, source-byte, and subprocess-output
 budgets from the initial limits table. Exceeding any budget is a
 `SEARCH_LIMIT_EXCEEDED` error, without presenting partial results as complete.
 Only the caller's `max_results` limit produces a successful truncated response.
+ripgrep's JSON output contains each matching line in full with the position
+of every occurrence, so a few matches on very long lines, or on lines with very
+many occurrences, can exceed the output budget.
 
 ### knowledge_read
 

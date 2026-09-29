@@ -7,8 +7,8 @@ read a local Git checkout of the notes without modifying them.
 ## Status
 
 The project is under development. The installable Python package, shared
-configuration, typed models, limits, path policy, and the core read, list, and
-info operations exist. Search and the MCP server tools are not implemented
+configuration, typed models, limits, path policy, and the core search, read,
+list, and info operations exist. The MCP server tools are not implemented
 yet. The [implementation tasks](docs/implementation-tasks.md) track progress.
 
 ## Current core API
@@ -34,6 +34,22 @@ print(result.content, result.next_line)
 the [specification](docs/phase-1-contract.md). They raise `KnowledgeError`
 with a contract error code when a request fails.
 
+`search_notes` in `knowledge_server.core.search` implements search. It is an
+`async` function and needs the path of the ripgrep executable:
+
+```python
+import asyncio
+import shutil
+
+from knowledge_server.core.models import SearchRequest
+from knowledge_server.core.search import search_notes
+
+request = SearchRequest(query="ECC memory")
+result = asyncio.run(search_notes(policy, request, ripgrep=shutil.which("rg")))
+for match in result.matches:
+    print(match.path, match.line, match.snippet)
+```
+
 Paths are root-relative and use `/`. The policy permits non-hidden Markdown
 files regardless of Git ignore rules, so an ignored Markdown note remains
 eligible. It excludes hidden names, symlinks, special files, and non-Markdown
@@ -43,7 +59,8 @@ regular files.
 
 - Python 3.14 or later.
 - uv for Python environment and dependency management.
-- ripgrep (`rg`) when Task 4 adds literal text search.
+- ripgrep (`rg`) for literal text search. The search tests run it and fail
+  if it is not installed.
 
 ## Validation
 

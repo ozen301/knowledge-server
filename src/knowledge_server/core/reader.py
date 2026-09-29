@@ -1,15 +1,17 @@
 """Bounded note loading and the read, list, and info operations.
 
 Every operation checks the caller's path with `PathPolicy` before touching the
-note. Read and info then load the note with `load_note`, which reads at most
-the file-size limit plus one byte, so an oversized file is detected without
-reading all of it.
+note. Read and info then load the note with `load_note`, and search with
+`load_note_text`. Both read at most the file-size limit plus one byte, so an
+oversized file is detected without reading all of it, and both apply the same
+content checks.
 """
 
 import contextlib
 import hashlib
 import os
 import stat
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -59,6 +61,21 @@ class LoadedNote:
     unreadable_reason: UnreadableReason | None
 
 
+@dataclass(frozen=True, slots=True)
+class LoadedText:
+    """A note's text from one bounded load, as search uses it.
+
+    Attributes:
+        text: The text with a leading BOM removed and CRLF normalized to LF;
+            None when the note is unreadable.
+        unreadable_reason: Why the note cannot be searched, or None when it
+            can. `text` is None exactly when this is set.
+    """
+
+    text: str | None
+    unreadable_reason: UnreadableReason | None
+
+
 def load_note(
     policy: PathPolicy, resolved: ResolvedPath, limits: Limits = DEFAULT_LIMITS
 ) -> LoadedNote:
@@ -81,19 +98,7 @@ def load_note(
             it was replaced by a directory, or `ACCESS_DENIED` if it cannot be
             opened or read or is no longer a regular file.
     """
-    fd = _open_below_root(policy.root, resolved.relative_path)
-    try:
-        status = os.fstat(fd)
-        if stat.S_ISDIR(status.st_mode):
-            raise KnowledgeError(DomainErrorCode.NOT_A_FILE)
-        if not stat.S_ISREG(status.st_mode):
-            raise KnowledgeError(DomainErrorCode.ACCESS_DENIED)
-        raw = _read_bounded(fd, limits.max_file_bytes + 1)
-    except OSError:
-        raise KnowledgeError(DomainErrorCode.ACCESS_DENIED) from None
-    finally:
-        _close(fd)
-
+    status, raw = _load_raw(policy, resolved, limits.max_file_bytes + 1)
     size_bytes = status.st_size
     modified_at = datetime.fromtimestamp(status.st_mtime, UTC)
     if len(raw) > limits.max_file_bytes:
@@ -103,6 +108,51 @@ def load_note(
         return LoadedNote(size_bytes, modified_at, None, None, "invalid_text")
     digest = hashlib.sha256(raw).hexdigest()
     return LoadedNote(size_bytes, modified_at, lines, digest, None)
+
+
+def load_note_text(
+    policy: PathPolicy,
+    resolved: ResolvedPath,
+    limits: Limits = DEFAULT_LIMITS,
+    *,
+    byte_budget: int,
+    checkpoint: Callable[[], None] | None = None,
+    on_read: Callable[[int], None] | None = None,
+) -> LoadedText:
+    """Load a checked note's text within a byte budget.
+
+    The note is opened and checked as `load_note` does. It reads at most the
+    file-size limit plus one byte, and at most `byte_budget` plus one byte, so
+    a note that would exceed the budget is detected without reading on.
+
+    Args:
+        policy: The policy that checked `resolved`.
+        resolved: A file path returned by `policy.resolve` or accepted by
+            `policy.visible_child`.
+        limits: Limits that set the largest readable file.
+        byte_budget: Most raw bytes the caller can still accept.
+        checkpoint: Called before each read chunk; it may raise to stop the
+            load.
+        on_read: Called with each chunk's size as soon as it is read, even if
+            a later read fails; it may raise to stop the load.
+
+    Returns:
+        The note's text when it is readable, or why it is not.
+
+    Raises:
+        KnowledgeError: `SEARCH_LIMIT_EXCEEDED` if the note has more than
+            `byte_budget` bytes, or the codes `load_note` raises.
+    """
+    max_bytes = min(limits.max_file_bytes, byte_budget) + 1
+    _, raw = _load_raw(policy, resolved, max_bytes, checkpoint, on_read)
+    if len(raw) > byte_budget:
+        raise KnowledgeError(DomainErrorCode.SEARCH_LIMIT_EXCEEDED)
+    if len(raw) > limits.max_file_bytes:
+        return LoadedText(None, "too_large")
+    text = _decode_text(raw)
+    if text is None:
+        return LoadedText(None, "invalid_text")
+    return LoadedText(text, None)
 
 
 def read_note(
@@ -257,6 +307,29 @@ def note_info(
     )
 
 
+def _load_raw(
+    policy: PathPolicy,
+    resolved: ResolvedPath,
+    max_bytes: int,
+    checkpoint: Callable[[], None] | None = None,
+    on_read: Callable[[int], None] | None = None,
+) -> tuple[os.stat_result, bytes]:
+    """Open a checked regular file and read at most `max_bytes` from it."""
+    fd = _open_below_root(policy.root, resolved.relative_path)
+    try:
+        status = os.fstat(fd)
+        if stat.S_ISDIR(status.st_mode):
+            raise KnowledgeError(DomainErrorCode.NOT_A_FILE)
+        if not stat.S_ISREG(status.st_mode):
+            raise KnowledgeError(DomainErrorCode.ACCESS_DENIED)
+        raw = _read_bounded(fd, max_bytes, checkpoint, on_read)
+    except OSError:
+        raise KnowledgeError(DomainErrorCode.ACCESS_DENIED) from None
+    finally:
+        _close(fd)
+    return status, raw
+
+
 def _open_below_root(root: Path, relative_path: str) -> int:
     """Open a policy-checked file without following any symlink below the root.
 
@@ -302,21 +375,34 @@ def _close(fd: int) -> None:
         os.close(fd)
 
 
-def _read_bounded(fd: int, max_bytes: int) -> bytes:
-    """Read until EOF or `max_bytes`, whichever comes first."""
+def _read_bounded(
+    fd: int,
+    max_bytes: int,
+    checkpoint: Callable[[], None] | None = None,
+    on_read: Callable[[int], None] | None = None,
+) -> bytes:
+    """Read until EOF or `max_bytes`.
+
+    `checkpoint` is called before each chunk and `on_read` with each chunk's
+    size right after it is read; either may raise to stop reading.
+    """
     chunks: list[bytes] = []
     remaining = max_bytes
     while remaining > 0:
+        if checkpoint is not None:
+            checkpoint()
         chunk = os.read(fd, min(remaining, _READ_CHUNK_BYTES))
         if not chunk:
             break
+        if on_read is not None:
+            on_read(len(chunk))
         chunks.append(chunk)
         remaining -= len(chunk)
     return b"".join(chunks)
 
 
-def _decode_lines(raw: bytes) -> tuple[str, ...] | None:
-    """Split strict UTF-8 into LF-delimited lines, or return None if invalid."""
+def _decode_text(raw: bytes) -> str | None:
+    """Decode strict UTF-8 without a BOM and with CRLF as LF, or return None."""
     if b"\x00" in raw:
         return None
     body = raw.removeprefix(_UTF8_BOM)
@@ -324,9 +410,16 @@ def _decode_lines(raw: bytes) -> tuple[str, ...] | None:
         text = body.decode("utf-8")
     except UnicodeDecodeError:
         return None
+    return text.replace("\r\n", "\n")
+
+
+def _decode_lines(raw: bytes) -> tuple[str, ...] | None:
+    """Split strict UTF-8 into LF-delimited lines, or return None if invalid."""
+    text = _decode_text(raw)
+    if text is None:
+        return None
     # Split on LF only. str.splitlines() would also split on lone CR and
     # Unicode separators, which ripgrep keeps within a line.
-    text = text.replace("\r\n", "\n")
     if not text:
         return ()
     return tuple(text.removesuffix("\n").split("\n"))

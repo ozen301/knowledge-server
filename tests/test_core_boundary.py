@@ -11,7 +11,7 @@ def test_core_import_does_not_load_the_mcp_sdk() -> None:
             sys.executable,
             "-c",
             (
-                "import sys; import knowledge_server.core.paths; "
+                "import sys; import knowledge_server.core.paths, knowledge_server.core.search; "
                 "assert not any(name == 'mcp' or name.startswith('mcp.') for name in sys.modules)"
             ),
         ],

@@ -1,13 +1,13 @@
 # Implementation tasks
 
-Run these sequentially. Tasks 1–3 are complete; their entries below keep only
-what exists and what later tasks need. Tasks 4–6 cover the remaining Phase 1
-work; Task 6a records the retrieval evaluation before web integration. Tasks
-7–9 outline the vault owner's next priority, web access; finalize
-route-specific details in Task 7 before coding or deploying that integration.
-Define tasks for retrieval upgrades from the evaluation findings. The
-[workflow improvement plan](#workflow-improvement-plan) runs alongside Task 4;
-check its status before starting each task.
+Run these sequentially. Tasks 1–4 are complete; their entries below keep only
+what exists and what later tasks need. Tasks 5 and 6 cover the remaining
+Phase 1 work; Task 6a records the retrieval evaluation before web
+integration. Tasks 7–9 outline the vault owner's next priority, web access;
+finalize route-specific details in Task 7 before coding or deploying that
+integration. Define tasks for retrieval upgrades from the evaluation
+findings. Check the status of the [workflow improvement
+plan](#workflow-improvement-plan) before starting each task.
 
 For each task, follow **Spec -> Tests -> Implementation -> Validation -> Drift
 prevention** as defined in [AGENTS.md](../AGENTS.md). Establish the behavior
@@ -35,7 +35,7 @@ non-hidden Markdown.
 ## Task 3 — Bounded read, list, and metadata (complete)
 
 `core/reader.py` provides the `read_note`, `list_directory`, and `note_info`
-operations and `load_note`, the shared bounded loader that Task 4 should reuse.
+operations and `load_note`, the shared bounded loader.
 The loader opens each path component relative to its parent's descriptor
 without following symlinks, so a symlink or FIFO swapped in after the policy
 check is rejected.
@@ -43,49 +43,41 @@ check is rejected.
 Known limitation: if a listed directory is replaced by a symlink between the
 policy check and the scan, the listing can return an empty page instead of
 `ACCESS_DENIED`. Each entry is still checked from the root, so no names from
-outside the root are exposed. Search discovery in Task 4 should consider the
-same race.
+outside the root are exposed. Search discovery has the same race; see Task 4.
 
-## Task 4 — Literal search through ripgrep
+## Task 4 — Literal search through ripgrep (complete)
 
-Depends on: Tasks 2 and 3.
+`core/search.py` provides `search_notes`, an `async` function that implements
+`knowledge_search` as the
+[contract](phase-1-contract.md#knowledge_search) defines it. On 2026-09-29
+the vault owner chose to send the loaded note text to ripgrep on standard
+input instead of file paths, and decided the [snippet
+window](phase-1-contract.md#snippet-window). A worker thread discovers notes
+with `PathPolicy.visible_child` and loads them with `reader.load_note_text`;
+one ripgrep process then searches the text. `tests/test_search.py` runs the
+real ripgrep for matching behavior and uses small shell scripts in its place
+for process failures, timeouts, cancellation, and output budgets.
 
-Resolve the Task 4 snippet-window question listed in the contract before writing
-tests.
+What Task 5 needs to know:
 
-Implement recursive discovery and controlled ripgrep execution. Reuse the same
-visibility and content rules as reading. Keep sorting, snippets, truncation,
-skip counts, and failure semantics deterministic. Break helpers into readable
-functions if necessary; do not introduce a general subprocess framework.
+- `search_notes` takes the ripgrep executable path as `ripgrep=`; startup
+  must find it. The adapter awaits `search_notes` directly. Cancelling the
+  awaiting task kills and reaps ripgrep, and the loading thread stops at its
+  next check.
+- The CI workflow installs ripgrep from the Ubuntu packages, so CI tests a
+  different ripgrep version than local development (15.1.0).
 
-Acceptance:
+Observed latency on 2026-09-29, local SSD, ripgrep 15.1.0: 5-8 ms on a
+five-note fixture, and about 330 ms on 2,000 synthetic notes (15.3 MiB). Of
+the 330 ms, about 200 ms is the policy check of each entry during discovery
+and about 100 ms is loading.
 
-- Real-ripgrep integration tests find expected lines in synthetic English and
-  CJK notes, including phrases, punctuation, leading `-`, filenames with
-  spaces, and repeated matches on one line.
-- Case handling, empty/no-match results, exact hit-limit boundaries, and
-  snippet windows follow the contract.
-- Invented English and Japanese examples demonstrate that different Unicode
-  representations can miss, including `é` versus `e` plus a combining accent
-  and `が` versus `か` plus a combining voiced mark. Label these as limitations
-  pending NFC support. Test successful matches with identical representations
-  too.
-- During recursive search, a discovered file removed before reading increments
-  `skipped.unreadable` and sets `incomplete`; the same failure on an explicit
-  file target returns `NOT_FOUND`.
-- A matching secret in hidden/outside/symlinked content never appears.
-- Tests verify `shell=False`, argument separation, user-config isolation, exit
-  code 1, process errors, timeout/cancellation cleanup, and output/work
-  budgets.
-- Tests prove huge subprocess output is bounded while being read, not merely
-  after full capture.
-- Observe latency on the small fixture set and record it; no elaborate
-  benchmark suite yet.
-
-Review checkpoint: inspect actual process arguments, cleanup, candidate
-filtering, and budget enforcement.
-
-Non-goals: regex, AND/OR query syntax, ranking, FTS, background indexing.
+Known limitations, also described in the contract: equivalent Unicode forms
+do not match until NFC support exists; many matches on very long lines can
+exceed the output budget; a blocked filesystem call cannot be interrupted, so
+the loading thread can outlive a search that already returned at its
+deadline; and a directory replaced by a symlink during discovery drops its
+notes without counting them.
 
 ## Task 5 — Expose the four tools over stdio
 

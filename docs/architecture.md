@@ -34,10 +34,10 @@ MCP adapter                                              [planned: Task 5]
     __main__.py        - startup checks and stdio launch
     |
     v
-Knowledge core                                   [mostly implemented]
-    core/paths.py      - which paths are visible            [implemented]
-    core/reader.py     - read, list, info                   [implemented]
-    core/search.py     - literal search through ripgrep     [planned: Task 4]
+Knowledge core                                          [implemented]
+    core/paths.py      - which paths are visible
+    core/reader.py     - read, list, info, and the shared note loader
+    core/search.py     - literal search through ripgrep
     core/models.py, core/limits.py - shared data types and limits
     |
     v
@@ -104,17 +104,19 @@ methods:
   `Projects/roadmap.md`. It returns a `ResolvedPath` if the path is visible and
   has the expected kind (file or directory). Otherwise it raises a
   `KnowledgeError` with the matching code.
-- `discover_immediate(path)` lists the visible children of a directory. It
-  checks each child with `resolve`, so listing and direct access always agree
-  on which paths are visible. A read also checks the note's size and encoding,
-  so a listed note can still be too large or invalid to read.
+- `visible_child(parent, name)` checks one entry found by scanning a
+  directory. It uses `resolve`, so scanning and direct access always agree on
+  which paths are visible.
+- `discover_immediate(path)` lists the visible children of a directory with
+  `visible_child`. A read also checks the note's size and encoding, so a
+  listed note can still be too large or invalid to read.
 
 The policy makes these files visible: regular files with a `.md` suffix in
 directories that are not hidden. It rejects hidden names (starting with `.`),
 symlinks, special files such as FIFOs, and paths that could leave the root,
 such as `../secret.md`.
 
-Used by: `core/reader.py` and the planned `core/search.py`.
+Used by: `core/reader.py` and `core/search.py`.
 
 ### Read, list, and info: `core/reader.py`
 
@@ -128,19 +130,43 @@ This module implements three of the four tools:
 
 `load_note()` is the shared loader for note contents. It reads at most the
 file-size limit plus one byte, checks that the text is valid UTF-8, and splits
-the text into lines. Search will reuse it so that search and read accept the
-same notes.
+the text into lines. `load_note_text()` applies the same checks for search. It
+returns the text without splitting it, reports the size of each chunk as it
+is read, and stops early when the search's byte budget or deadline is
+reached. Because both
+use the same code, search and read accept the same notes.
 
-Used by: the planned adapter.
+Used by: `core/search.py` and the planned adapter.
 
-### Literal search: `core/search.py` (planned)
+### Literal search: `core/search.py`
 
-Task 4 adds `knowledge_search`. It will find notes with the shared policy,
-check them with the same content rules as reading, and run ripgrep to find
-lines that contain the query as a literal phrase. Matching ignores letter
-case unless the caller asks for case-sensitive search. A query such as
-`ECC Ryzen` matches that phrase only; it is not split into words and is not a
-semantic search.
+`search_notes()` implements `knowledge_search`. It finds the lines that
+contain the query as a literal phrase. Matching ignores letter case unless the
+caller asks for case-sensitive search. A query such as `ECC Ryzen` matches that
+phrase only; it is not split into words and is not a semantic search.
+
+Search is an `async` function, so that cancelling the request stops it. It
+runs in two stages:
+
+1. **Load.** A worker thread walks the target directory, checks every entry
+   with `visible_child`, and loads each visible note with
+   `load_note_text()`. Notes that are too large, not valid text, or unreadable
+   are skipped and counted. The thread checks the deadline and a stop signal
+   as it goes.
+2. **Match.** The loaded text of the eligible notes goes, in sorted path
+   order, to one ripgrep process on standard input. Search maps each line
+   number that ripgrep reports back to a note and a line, checks that the
+   reported line equals the text it sent, and cuts the snippet from that line.
+
+ripgrep never opens a vault file. So a note replaced by a symlink after the
+policy check cannot make ripgrep read a file outside the vault, and a note
+edited during the search cannot make a result disagree with the text that was
+checked. Because the input is in result order, ripgrep's `--max-count` stops
+the search as soon as one more hit than requested is found. The output is read
+in fixed-size chunks and counted against the output budget as it arrives. The
+ripgrep process is killed and reaped on a timeout, a cancellation, or an
+exceeded budget; a further cancellation during the reap waits until the
+process has exited.
 
 ### MCP adapter: `adapter/server.py` and `__main__.py` (planned)
 
@@ -203,8 +229,9 @@ the exact path rules.
 The server reads the files in the checkout directly. It does not use Git to
 decide what exists. A Markdown note listed in `.gitignore` is still visible,
 because ignore rules control what Git tracks, not who may read a file. Search
-through ripgrep must therefore turn off ripgrep's default use of ignore files,
-so that all four tools agree on what is visible.
+finds notes with the same policy as the other tools and sends their text to
+ripgrep on standard input, so ripgrep's own ignore-file handling never
+applies and all four tools agree on what is visible.
 
 ### Symlinks are always rejected
 

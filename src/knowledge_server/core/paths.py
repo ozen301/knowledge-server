@@ -177,7 +177,7 @@ class PathPolicy:
                 for count, entry in enumerate(scan, start=1):
                     if count > self.immediate_entry_limit:
                         raise KnowledgeError(DomainErrorCode.DIRECTORY_LIMIT_EXCEEDED)
-                    visible = self._visible_entry(entry.name, directory.relative_path)
+                    visible = self.visible_child(directory.relative_path, entry.name)
                     if visible is not None:
                         entries.append(visible)
         except KnowledgeError:
@@ -247,8 +247,22 @@ class PathPolicy:
         except OSError:
             raise KnowledgeError(DomainErrorCode.ACCESS_DENIED) from None
 
-    def _visible_entry(self, name: str, parent: str) -> VisibleEntry | None:
-        """Return an entry only when ordinary direct resolution accepts it."""
+    def visible_child(self, parent: str, name: str) -> VisibleEntry | None:
+        """Check one directory entry found by scanning a visible directory.
+
+        The entry is checked with `resolve` from the root, so scanning and
+        direct access always agree on what is visible. If the parent was
+        replaced by a symlink after it was checked, its entries are rejected
+        here, so no name from outside the root is returned.
+
+        Args:
+            parent: Root-relative path of the scanned directory; empty for the
+                root.
+            name: The entry's name in that directory.
+
+        Returns:
+            The visible entry, or None when the policy hides or rejects it.
+        """
         relative_path = f"{parent}/{name}" if parent else name
         try:
             resolved = self.resolve(relative_path, TargetKind.EITHER)

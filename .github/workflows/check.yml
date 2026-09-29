@@ -21,4 +21,6 @@ jobs:
       - uses: astral-sh/setup-uv@v10.2.0
         with:
           python-version: "3.14"
+      # The search tests run the real ripgrep executable.
+      - run: sudo apt-get update && sudo apt-get install --yes ripgrep
       - run: scripts/check --ci
