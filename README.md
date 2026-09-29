@@ -72,6 +72,8 @@ script locally before merging `dev`.
 
 - [Project glossary](CONTEXT.md): canonical terms for the vault, its local
   checkout, and project roles.
+- [Architecture overview](docs/architecture.md): what the components do and
+  how a request moves through them.
 - [Repository guide](AGENTS.md): development workflow and writing conventions.
 - [Implementation plan](docs/implementation-plan.md): architecture, decisions,
   and milestones.

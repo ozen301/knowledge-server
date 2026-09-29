@@ -50,8 +50,10 @@ for features and behavior changes, including bug fixes:
 3. **Implementation:** Write the code to satisfy the specification and tests.
 4. **Validation:** Run the checks below and inspect the diff.
 5. **Drift prevention:** Update the specification, this guide, and usage
-   instructions when a change makes them inaccurate. Include those updates in
-   the same change as the code and tests.
+   instructions when a change makes them inaccurate. When a change adds a
+   component or changes what one does, update the
+   [architecture overview](docs/architecture.md). Include those updates in the
+   same change as the code and tests.
 
 An authorized task does not require separate approval for each workflow step,
 but it does not by itself authorize commits or pushes.
