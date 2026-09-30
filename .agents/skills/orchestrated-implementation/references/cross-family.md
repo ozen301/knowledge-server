@@ -1,14 +1,14 @@
 # Cross-family agents
 
 This file is the only place in the skill that names model identifiers. They
-were checked on 2026-09-29. If a tool rejects one, tell the user and choose
+were checked on 2026-09-30. If a tool rejects one, tell the user and choose
 again.
 
 | Role | Claude family | OpenAI (Codex) family |
 |---|---|---|
 | Investigator | `claude-haiku-4-5-20251001`; `claude-sonnet-5-5` when judgment is needed | `gpt-6-luna` |
-| Writer | `claude-sonnet-5-5` | `gpt-6-sol`; `gpt-6-luna` for mechanical edits |
-| Reviewer | `claude-opus-5-5` | `gpt-6-sol`; `gpt-6-astra` when the stakes justify its cost; `gpt-6-luna` for a narrow check |
+| Writer | `claude-sonnet-5-5` | `gpt-6.1-sol`; `gpt-6-luna` for mechanical edits |
+| Reviewer | `claude-opus-5-5` | `gpt-6.1-sol`; `gpt-6-astra` when the stakes justify its cost; `gpt-6-luna` for a narrow check |
 
 Every command below has a deadline. Exit status 124 or 137 means the deadline
 expired, and any other nonzero status means the run failed. Report both as
