@@ -24,6 +24,7 @@ from mcp_types import CallToolResult, TextContent
 
 from knowledge_server.adapter import server as server_module
 from knowledge_server.adapter.server import create_server
+from knowledge_server.core.limits import DEFAULT_LIMITS
 from knowledge_server.core.models import (
     DomainErrorCode,
     InfoRequest,
@@ -48,10 +49,10 @@ SECRET = "SENTINEL-SECRET"
 PRIVATE_TEXT = "PRIVATE-EXCEPTION-TEXT"
 QUERY_TEXT = "QUERY-PRIVATE-TEXT"
 TOOL_NAMES = {"knowledge_search", "knowledge_read", "knowledge_list", "knowledge_info"}
-INVALID_ARGUMENT = {
-    "code": "INVALID_ARGUMENT",
-    "message": KnowledgeError(DomainErrorCode.INVALID_ARGUMENT).message,
-}
+MAX_RESULTS = DEFAULT_LIMITS.max_search_results
+MAX_PAGE = DEFAULT_LIMITS.max_directory_page
+MAX_LINES = DEFAULT_LIMITS.max_read_lines
+MAX_QUERY = DEFAULT_LIMITS.max_query_length
 INTERNAL_ERROR = {
     "code": "INTERNAL_ERROR",
     "message": KnowledgeError(DomainErrorCode.INTERNAL_ERROR).message,
@@ -292,40 +293,113 @@ def test_empty_results_are_successes_not_errors(vault: Path) -> None:
 # Argument and domain errors
 
 
+PATH_STRING = "path must be a string."
+START_LINE = "start_line must be an integer of at least 1."
+READ_RANGE = (
+    "end_line must not be before start_line, and the range must be at most "
+    f"{MAX_LINES} lines."
+)
+SINGLE_LINE = (
+    "query must contain non-space text on a single line, without NUL characters."
+)
+RESULTS_RANGE = f"max_results must be an integer from 1 to {MAX_RESULTS}."
+PAGE_RANGE = f"limit must be an integer from 1 to {MAX_PAGE}."
+
+
 @pytest.mark.parametrize(
-    ("tool", "arguments"),
+    ("tool", "arguments", "message"),
     [
-        ("knowledge_read", {}),
-        ("knowledge_read", {"path": 5}),
-        ("knowledge_read", {"path": None}),
-        ("knowledge_read", {"path": "notes/alpha.md", "start_line": "2"}),
-        ("knowledge_read", {"path": "notes/alpha.md", "start_line": True}),
-        ("knowledge_read", {"path": "notes/alpha.md", "start_line": 0}),
-        ("knowledge_read", {"path": "notes/alpha.md", "start_line": 5, "end_line": 2}),
-        ("knowledge_read", {"path": "notes/alpha.md", "end_line": 201}),
-        ("knowledge_read", {"path": "notes/alpha.md", "unknown": 1}),
-        ("knowledge_search", {}),
-        ("knowledge_search", {"query": "   "}),
-        ("knowledge_search", {"query": "two\nlines"}),
-        ("knowledge_search", {"query": QUERY_TEXT * 40}),
-        ("knowledge_search", {"query": "ECC", "max_results": 51}),
-        ("knowledge_search", {"query": "ECC", "max_results": "[1]"}),
-        ("knowledge_search", {"query": "ECC", "case_sensitive": "true"}),
-        ("knowledge_search", {"query": "ECC", "mode": "regex"}),
-        ("knowledge_list", {"offset": -1}),
-        ("knowledge_list", {"limit": 0}),
-        ("knowledge_list", {"limit": 201}),
-        ("knowledge_list", {"limit": 1.0}),
-        ("knowledge_info", {"path": ["notes/alpha.md"]}),
+        ("knowledge_read", {}, "path is required and must be a string."),
+        ("knowledge_read", {"path": 5}, PATH_STRING),
+        ("knowledge_read", {"path": None}, PATH_STRING),
+        ("knowledge_read", {"path": "notes/alpha.md", "start_line": "2"}, START_LINE),
+        ("knowledge_read", {"path": "notes/alpha.md", "start_line": True}, START_LINE),
+        ("knowledge_read", {"path": "notes/alpha.md", "start_line": 0}, START_LINE),
+        (
+            "knowledge_read",
+            {"path": "notes/alpha.md", "start_line": 5, "end_line": 2},
+            READ_RANGE,
+        ),
+        (
+            "knowledge_read",
+            {"path": "notes/alpha.md", "end_line": MAX_LINES + 1},
+            READ_RANGE,
+        ),
+        (
+            "knowledge_read",
+            {"path": "notes/alpha.md", "end_line": "3"},
+            "end_line must be an integer of at least 1 or null.",
+        ),
+        (
+            "knowledge_read",
+            {"path": "notes/alpha.md", QUERY_TEXT: 1},
+            "Unknown argument. Valid arguments: path, start_line, end_line.",
+        ),
+        ("knowledge_read", {"path": 5, "start_line": 0}, f"{PATH_STRING} {START_LINE}"),
+        (
+            "knowledge_search",
+            {},
+            f"query is required and must be a string of 1 to {MAX_QUERY} characters.",
+        ),
+        ("knowledge_search", {"query": "   "}, SINGLE_LINE),
+        ("knowledge_search", {"query": "two\nlines"}, SINGLE_LINE),
+        ("knowledge_search", {"query": "one\x00two"}, SINGLE_LINE),
+        (
+            "knowledge_search",
+            {"query": QUERY_TEXT * 40},
+            f"query must be a string of 1 to {MAX_QUERY} characters.",
+        ),
+        (
+            "knowledge_search",
+            {"query": "ECC", "max_results": MAX_RESULTS + 1},
+            RESULTS_RANGE,
+        ),
+        ("knowledge_search", {"query": "ECC", "max_results": "[1]"}, RESULTS_RANGE),
+        (
+            "knowledge_search",
+            {"query": "ECC", "case_sensitive": "true"},
+            "case_sensitive must be true or false.",
+        ),
+        (
+            "knowledge_search",
+            {"query": "ECC", "mode": "regex"},
+            'mode must be "literal".',
+        ),
+        ("knowledge_list", {"offset": -1}, "offset must be an integer of at least 0."),
+        ("knowledge_list", {"limit": 0}, PAGE_RANGE),
+        ("knowledge_list", {"limit": MAX_PAGE + 1}, PAGE_RANGE),
+        ("knowledge_list", {"limit": 1.0}, PAGE_RANGE),
+        ("knowledge_info", {"path": ["notes/alpha.md"]}, PATH_STRING),
     ],
 )
-def test_invalid_arguments_return_invalid_argument(
-    vault: Path, tool: str, arguments: dict[str, Any]
+def test_invalid_arguments_name_the_argument_and_accepted_values(
+    vault: Path, tool: str, arguments: dict[str, Any], message: str
 ) -> None:
-    """Arguments the request model rejects produce the contract error."""
+    """A rejected argument is named with its accepted values, never its value."""
     (result,) = _run(_call_in_process(vault, [(tool, arguments)]))
-    assert _error(result) == INVALID_ARGUMENT
+    assert _error(result) == {"code": "INVALID_ARGUMENT", "message": message}
     assert QUERY_TEXT not in _text(result)
+
+
+def test_argument_descriptions_state_the_limits(vault: Path) -> None:
+    """Tool schemas describe the bounds, for hosts that drop numeric keywords."""
+
+    async def schemas() -> dict[str, dict[str, Any]]:
+        async with Client(create_server(PathPolicy(vault), ripgrep=RG)) as client:
+            listed = await client.list_tools()
+        return {tool.name: tool.input_schema["properties"] for tool in listed.tools}
+
+    properties = _run(schemas())
+    search = properties["knowledge_search"]
+    assert f"from 1 to {MAX_RESULTS}" in search["max_results"]["description"]
+    assert f"at most {MAX_QUERY} characters" in search["query"]["description"]
+    assert (
+        f"at most {MAX_LINES} lines"
+        in properties["knowledge_read"]["end_line"]["description"]
+    )
+    assert (
+        f"from 1 to {MAX_PAGE}" in properties["knowledge_list"]["limit"]["description"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -563,7 +637,10 @@ def test_stdio_session_serves_four_tools_and_exits_cleanly(
             missing = await client.call_tool("knowledge_read", {"path": "missing.md"})
             assert _error(missing)["code"] == "NOT_FOUND"
             invalid = await client.call_tool("knowledge_list", {"limit": "5"})
-            assert _error(invalid) == INVALID_ARGUMENT
+            assert _error(invalid) == {
+                "code": "INVALID_ARGUMENT",
+                "message": PAGE_RANGE,
+            }
             again = await client.call_tool("knowledge_info", {"path": "notes/beta.md"})
             _success(again)
 

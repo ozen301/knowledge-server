@@ -1,61 +1,47 @@
 # knowledge-server
 
-A read-only MCP server that will let an agent search a personal knowledge base
-of Markdown notes, read the relevant lines, and cite the source note. It will
-read a local Git checkout of the notes without modifying them.
+A read-only MCP server that lets an agent search a personal knowledge base of
+Markdown notes, read the relevant lines, and cite the source note. It reads a
+local Git checkout of the notes without modifying them.
 
 ## Status
 
-The project is under development. The installable Python package, shared
-configuration, typed models, limits, path policy, and the core search, read,
-list, and info operations exist. The `knowledge-server` command serves the
-four MCP tools over stdio; instructions for registering it with an MCP host
-are not written yet. The [implementation tasks](docs/implementation-tasks.md)
-track progress.
+The project is under development. The `knowledge-server` command serves four
+read-only MCP tools over stdio to a local MCP host: `knowledge_search`,
+`knowledge_read`, `knowledge_list`, and `knowledge_info`. It has been checked
+with Claude Code and Codex CLI. Web-client access is planned but does not
+exist. The [implementation tasks](docs/implementation-tasks.md) track
+progress.
 
-## Current core API
+## Quick start
 
-The configuration, path policy, and core operations are available as a
-Python API, and the MCP tools call these operations. This example is not a
-server launch command:
+You need uv, ripgrep (`rg`) on `PATH`, a clone of this repository, and a
+local vault checkout. Replace the example paths with absolute paths.
 
-```python
-from knowledge_server.config import load_config
-from knowledge_server.core.models import ReadRequest
-from knowledge_server.core.paths import PathPolicy
-from knowledge_server.core.reader import read_note
+1. Register the server with your MCP host. The host starts it when needed.
 
-config = load_config({"KNOWLEDGE_ROOT": "/path/to/knowledge-vault"})
-policy = PathPolicy(config.root)
-result = read_note(policy, ReadRequest(path="Projects/roadmap.md", end_line=20))
-print(result.content, result.next_line)
-```
+   Claude Code:
 
-`read_note`, `list_directory`, and `note_info` in
-`knowledge_server.core.reader` implement the read, list, and info behavior in
-the [specification](docs/phase-1-contract.md). They raise `KnowledgeError`
-with a contract error code when a request fails.
+   ```sh
+   claude mcp add --scope user knowledge \
+     -e KNOWLEDGE_ROOT=/path/to/knowledge-vault \
+     -- uv run --project /path/to/knowledge-server --locked knowledge-server
+   ```
 
-`search_notes` in `knowledge_server.core.search` implements search. It is an
-`async` function and needs the path of the ripgrep executable:
+   Codex CLI:
 
-```python
-import asyncio
-import shutil
+   ```sh
+   codex mcp add knowledge \
+     --env KNOWLEDGE_ROOT=/path/to/knowledge-vault \
+     -- uv run --project /path/to/knowledge-server --locked knowledge-server
+   ```
 
-from knowledge_server.core.models import SearchRequest
-from knowledge_server.core.search import search_notes
+2. Ask the agent a question about your notes and to cite its source. It
+   searches, reads the relevant lines, and cites the note path and line.
 
-request = SearchRequest(query="ECC memory")
-result = asyncio.run(search_notes(policy, request, ripgrep=shutil.which("rg")))
-for match in result.matches:
-    print(match.path, match.line, match.snippet)
-```
-
-Paths are root-relative and use `/`. The policy permits non-hidden Markdown
-files regardless of Git ignore rules, so an ignored Markdown note remains
-eligible. It excludes hidden names, symlinks, special files, and non-Markdown
-regular files.
+The host sends the note excerpts it receives to its model provider. The
+[usage guide](docs/usage.md) explains what the server reads, its limits,
+data disclosure, troubleshooting, and the Python API.
 
 ## Development prerequisites
 
@@ -93,6 +79,8 @@ script locally before merging `dev`.
   checkout, and project roles.
 - [Architecture overview](docs/architecture.md): what the components do and
   how a request moves through them.
+- [Usage guide](docs/usage.md): host registration, behavior, limits, and
+  data disclosure.
 - [Repository guide](AGENTS.md): development workflow and writing conventions.
 - [Implementation plan](docs/implementation-plan.md): architecture, decisions,
   and milestones.

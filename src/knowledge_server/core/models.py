@@ -6,10 +6,11 @@ written for tool callers, so that tool schemas built from these models can
 show them.
 """
 
+import json
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from knowledge_server.core.limits import DEFAULT_LIMITS
 
@@ -35,6 +36,8 @@ class DomainErrorCode(StrEnum):
 
 # Fixed messages keep file paths, note text, and exception details out of
 # responses: an error message never includes the input that caused it.
+# `invalid_argument_message` replaces the INVALID_ARGUMENT message with one
+# that names the rejected arguments, still without their values.
 _SAFE_MESSAGES: dict[DomainErrorCode, str] = {
     DomainErrorCode.INVALID_ARGUMENT: "The request arguments are invalid.",
     DomainErrorCode.INVALID_PATH: "The requested path is invalid.",
@@ -58,18 +61,74 @@ class KnowledgeError(Exception):
 
     Attributes:
         code: The contract error code.
-        message: A generic message for the code that contains no request data.
+        message: A message for the code that contains no request data.
     """
 
-    def __init__(self, code: DomainErrorCode) -> None:
+    def __init__(self, code: DomainErrorCode, message: str | None = None) -> None:
         """Create an error for a contract code.
 
         Args:
             code: The contract error code to report.
+            message: A safe message to use instead of the code's fixed one.
         """
         self.code = code
-        self.message = _SAFE_MESSAGES[code]
+        self.message = _SAFE_MESSAGES[code] if message is None else message
         super().__init__(self.message)
+
+
+def invalid_argument_message(model: type[BaseModel], error: ValidationError) -> str:
+    """Describe rejected arguments without repeating any supplied value.
+
+    Each rejected argument is named with the values its schema accepts, so the
+    message follows the limits. An unknown argument is not named, because the
+    caller chose the name; the message lists the valid arguments instead.
+
+    Args:
+        model: The request model that rejected the arguments.
+        error: The error raised by validating the arguments.
+
+    Returns:
+        One sentence per problem, joined by spaces.
+    """
+    properties = model.model_json_schema()["properties"]
+    sentences: list[str] = []
+    for problem in error.errors():
+        location = problem["loc"]
+        if problem["type"] == "extra_forbidden":
+            sentence = f"Unknown argument. Valid arguments: {', '.join(properties)}."
+        elif problem["type"] == "value_error" and not location and "ctx" in problem:
+            # Raised by this module's model validators with fixed text.
+            sentence = str(problem["ctx"]["error"])
+        elif location and location[0] in properties:
+            name = location[0]
+            required = " is required and" if problem["type"] == "missing" else ""
+            sentence = f"{name}{required} must be {_accepted_values(properties[name])}."
+        else:
+            sentence = _SAFE_MESSAGES[DomainErrorCode.INVALID_ARGUMENT]
+        sentences.append(sentence)
+    return " ".join(dict.fromkeys(sentences))
+
+
+def _accepted_values(schema: dict[str, Any]) -> str:
+    options = schema.get("anyOf", [schema])
+    value = next(option for option in options if option.get("type") != "null")
+    if "const" in value:
+        text = json.dumps(value["const"])
+    elif value["type"] == "integer":
+        text = "an integer"
+        if "maximum" in value:
+            text += f" from {value['minimum']} to {value['maximum']}"
+        elif "minimum" in value:
+            text += f" of at least {value['minimum']}"
+    elif value["type"] == "string" and "maxLength" in value:
+        text = f"a string of {value['minLength']} to {value['maxLength']} characters"
+    elif value["type"] == "string":
+        text = "a string"
+    elif value["type"] == "boolean":
+        text = "true or false"
+    else:
+        text = f"a valid {value['type']}"
+    return text + (" or null" if len(options) > 1 else "")
 
 
 class ContractModel(BaseModel):
@@ -92,8 +151,9 @@ class SearchRequest(ContractModel):
         min_length=1,
         max_length=DEFAULT_LIMITS.max_query_length,
         description=(
-            "Literal text to find within one line. Spaces are significant; "
-            "there is no regular expression or query syntax."
+            "Literal text to find within one line, at most "
+            f"{DEFAULT_LIMITS.max_query_length} characters. Spaces are "
+            "significant; there is no regular expression or query syntax."
         ),
     )
     path: str = Field(
@@ -109,7 +169,9 @@ class SearchRequest(ContractModel):
         int, Field(strict=True, ge=1, le=DEFAULT_LIMITS.max_search_results)
     ] = Field(
         default=DEFAULT_LIMITS.default_search_results,
-        description="Most matches to return.",
+        description=(
+            f"Most matches to return, from 1 to {DEFAULT_LIMITS.max_search_results}."
+        ),
     )
     case_sensitive: bool = Field(
         default=False,
@@ -138,7 +200,10 @@ class SearchRequest(ContractModel):
             or "\r" in self.query
             or "\x00" in self.query
         ):
-            raise ValueError("query must be a non-blank single line")
+            raise ValueError(
+                "query must contain non-space text on a single line, without NUL "
+                "characters."
+            )
         return self
 
 
@@ -153,7 +218,9 @@ class ReadRequest(ContractModel):
         default=None,
         description=(
             "Last line to return, inclusive. Null requests the default number "
-            "of lines. A range beyond the end of the note is shortened."
+            "of lines. The range can be at most "
+            f"{DEFAULT_LIMITS.max_read_lines} lines; a range beyond the end of "
+            "the note is shortened."
         ),
     )
 
@@ -172,7 +239,10 @@ class ReadRequest(ContractModel):
             self.end_line < self.start_line
             or self.end_line - self.start_line + 1 > DEFAULT_LIMITS.max_read_lines
         ):
-            raise ValueError("read range is invalid")
+            raise ValueError(
+                "end_line must not be before start_line, and the range must be "
+                f"at most {DEFAULT_LIMITS.max_read_lines} lines."
+            )
         return self
 
 
@@ -187,7 +257,7 @@ class ListRequest(ContractModel):
     offset: StrictNonNegativeInt = Field(
         default=0,
         description=(
-            "Number of entries to skip. Pass the previous result's "
+            "Number of entries to skip, 0 or more. Pass the previous result's "
             "`next_offset` to get the next page."
         ),
     )
@@ -195,7 +265,10 @@ class ListRequest(ContractModel):
         int, Field(strict=True, ge=1, le=DEFAULT_LIMITS.max_directory_page)
     ] = Field(
         default=DEFAULT_LIMITS.default_directory_page,
-        description="Most entries to return in this page.",
+        description=(
+            "Most entries to return in this page, from 1 to "
+            f"{DEFAULT_LIMITS.max_directory_page}."
+        ),
     )
 
 

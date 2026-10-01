@@ -39,6 +39,7 @@ from knowledge_server.core.models import (
     ReadResult,
     SearchRequest,
     SearchResult,
+    invalid_argument_message,
 )
 from knowledge_server.core.paths import PathPolicy
 from knowledge_server.core.reader import list_directory, note_info, read_note
@@ -174,17 +175,20 @@ def _tool[RequestT: BaseModel, ResultT: BaseModel](
         try:
             try:
                 request = request_model.model_validate(arguments)
-            except ValidationError:
-                return _error_result(DomainErrorCode.INVALID_ARGUMENT)
+            except ValidationError as error:
+                message = invalid_argument_message(request_model, error)
+                return _error_result(
+                    KnowledgeError(DomainErrorCode.INVALID_ARGUMENT, message)
+                )
             return await operation(request)
         except KnowledgeError as error:
-            return _error_result(error.code)
+            return _error_result(error)
         # Every other failure becomes a safe INTERNAL_ERROR; otherwise the SDK
         # would log the exception's text. Catch Exception, not BaseException,
         # so that cancellation still propagates.
         except Exception as error:  # noqa: BLE001
             _log_unexpected(name, error)
-            return _error_result(DomainErrorCode.INTERNAL_ERROR)
+            return _error_result(KnowledgeError(DomainErrorCode.INTERNAL_ERROR))
 
     return Tool(
         fn=run,
@@ -205,8 +209,7 @@ def _tool[RequestT: BaseModel, ResultT: BaseModel](
     )
 
 
-def _error_result(code: DomainErrorCode) -> CallToolResult:
-    error = KnowledgeError(code)
+def _error_result(error: KnowledgeError) -> CallToolResult:
     text = json.dumps({"code": error.code.value, "message": error.message})
     return CallToolResult(content=[TextContent(type="text", text=text)], is_error=True)
 

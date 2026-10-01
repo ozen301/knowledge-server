@@ -1,12 +1,11 @@
 # Implementation tasks
 
-Run these sequentially. Tasks 1–5 are complete; their entries below keep only
-what exists and what later tasks need. Task 6 covers the remaining Phase 1
-work; Task 6a records the retrieval evaluation before web
-integration. Tasks 7–9 outline the vault owner's next priority, web access;
-finalize route-specific details in Task 7 before coding or deploying that
-integration. Define tasks for retrieval upgrades from the evaluation
-findings. Check the status of the [workflow improvement
+Run these sequentially. Tasks 1–6 are complete; their entries below keep only
+what exists and what later tasks need. Task 6a records the retrieval
+evaluation before web integration. Tasks 7–9 outline the vault owner's next
+priority, web access; finalize route-specific details in Task 7 before coding
+or deploying that integration. Define tasks for retrieval upgrades from the
+evaluation findings. Check the status of the [workflow improvement
 plan](#workflow-improvement-plan) before starting each task.
 
 For each task, follow **Spec -> Tests -> Implementation -> Validation -> Drift
@@ -111,45 +110,32 @@ What Task 6 needs to know:
 - When upgrading the SDK, check the non-exported classes that
   `adapter/server.py` imports.
 
-## Task 6 — Local integration, documentation, and release check
+## Task 6 — Local integration, documentation, and release check (complete)
 
-Depends on: Task 5.
+The [usage guide](usage.md) documents setup for Claude Code and Codex CLI and
+what the server reads; the README has a quick start. `tests/fixtures/vault/`
+holds sample notes in English and Japanese for Task 6a. On 2026-10-01 the
+vault owner decided that an `INVALID_ARGUMENT` message names each rejected
+argument and its accepted values (see the
+[contract](phase-1-contract.md#error-and-change-behavior)), and that argument
+descriptions state their ranges.
 
-Document the launch command and environment setup using portable example paths.
-Replace these paths with local absolute paths when registering the host.
-Planned form, to verify against the implemented entry point:
+Verified on 2026-10-01 with Claude Code 2.1.286 and Codex CLI 0.159.3: in
+headless runs and in the vault owner's interactive check, both hosts answered
+by searching and reading and cited the source note. A Git copy of the vault
+showed no file or Git changes. Median timings on the sample notes: search
+9 ms; read, list, and info 2-3 ms; startup about 0.7 s. This sample sets no
+performance guarantee.
 
-```sh
-KNOWLEDGE_ROOT=/path/to/knowledge-vault \
-  uv run --project /path/to/knowledge-server --locked knowledge-server
-```
+What Task 6a needs to know:
 
-At the start of this task, select the first local MCP host and decide where to
-record the manual check and timing evidence. No host choice is required for
-Tasks 1–5. Document registration for the selected host using its current
-supported configuration. Verify the command from an unrelated working
-directory. Explain live-checkout semantics, manual Git synchronization, literal
-search, exclusions, limits, and data disclosure: a connected model provider
-can receive the note excerpts returned to its host.
-
-Acceptance:
-
-- `scripts/check` passes, including its checks for staged changes and new
-  files (see [AGENTS.md](../AGENTS.md)).
-- Run the complete suite on the minimum supported version with
-  `uv run --python 3.14 --locked --dev pytest`.
-- A synthetic end-to-end question produces a search hit, a read of the cited
-  lines, and a correct source path in the host's answer.
-- Measure search/read timings against the invented notes and record usability
-  gaps without setting a performance guarantee from this small sample.
-- Confirm the server makes no vault writes or Git changes. No network
-  deployment is part of this task.
-- If host access is unavailable, report exactly that manual check as pending;
-  automated protocol tests alone do not complete the real-host acceptance gate.
-
-The local MVP is complete only after these checks and the real-host workflow
-pass. Do not claim future milestones are complete because the scaffolding could
-support them.
+- Literal search needs the note's wording; one paraphrased Codex question took
+  ten searches.
+- Codex with `gpt-6-luna` sometimes cited a neighboring line or answered from a
+  snippet without reading. At low reasoning effort, it once searched local
+  files instead of calling the tools.
+- `codex exec` waits for stdin unless stdin is closed, for example with
+  `< /dev/null`.
 
 ## Task 6a — Record repeatable retrieval evaluation
 

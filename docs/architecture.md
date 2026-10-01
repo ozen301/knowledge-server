@@ -81,7 +81,10 @@ models.
 The module also defines `KnowledgeError`, the one exception type that core
 operations raise for an expected failure. Each error has a code from
 `DomainErrorCode`, such as `NOT_FOUND`, and a fixed message. The message never
-contains the path, note text, or other request data.
+contains the path, note text, or other request data. For `INVALID_ARGUMENT`,
+`invalid_argument_message()` builds the message from the request model's
+schema: it names each rejected argument and the values it accepts, so a caller
+can correct the call.
 
 Used by: every other core module, and the adapter.
 
@@ -184,7 +187,7 @@ input schema and its result model's schema as the output schema. A tool call
 goes through these steps:
 
 1. The request model validates the raw arguments. A rejected argument returns
-   `INVALID_ARGUMENT`.
+   `INVALID_ARGUMENT` with a message that names the argument.
 2. The tool calls one core function. Read, list, and info run in a worker
    thread; search is awaited directly, so cancelling the request kills its
    ripgrep process.
@@ -268,6 +271,7 @@ rejected path forms.
 
 ## Where to go next
 
+- [Usage guide](usage.md): connecting the server to an MCP host.
 - [Glossary](../CONTEXT.md): the project's terms.
 - [Phase 1 contract](phase-1-contract.md): exact tool behavior, limits, and
   error codes.

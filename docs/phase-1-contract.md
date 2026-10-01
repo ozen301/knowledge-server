@@ -351,7 +351,12 @@ knowledge_info(path: str)
 Domain errors have `code` and a short safe `message`. A tool returns a domain
 error as a result with `isError=true` and one text content item that holds
 the JSON object `{"code": "NOT_FOUND", "message": "..."}`; the error result
-has no structured content. Codes:
+has no structured content. Each code has one fixed message, except
+`INVALID_ARGUMENT`: its message names each rejected argument and the values
+that argument accepts, for example `max_results must be an integer from 1 to
+50.` The accepted values come from the request models, so the message follows
+the limits. An unknown argument is not named; the message lists the valid
+arguments instead. No message repeats a value from the request. Codes:
 `INVALID_ARGUMENT`, `INVALID_PATH`, `NOT_FOUND`, `ACCESS_DENIED`,
 `UNSUPPORTED_TYPE`, `NOT_A_FILE`, `NOT_A_DIRECTORY`, `FILE_TOO_LARGE`,
 `INVALID_ENCODING`, `LINE_TOO_LONG`, `SEARCH_LIMIT_EXCEEDED`,
