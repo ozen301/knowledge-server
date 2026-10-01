@@ -148,7 +148,7 @@ def test_all_result_models_have_json_schema_and_round_trip() -> None:
         ),
         ReadResult(
             path="a.md",
-            content="a\n",
+            numbered_content="1\ta\n",
             start_line=1,
             end_line=1,
             total_lines=1,

@@ -119,9 +119,13 @@ the server's environment.
   different forms, such as a precomposed and a combining accent, does not
   match. Full-width and half-width forms, such as `＋` and `+`, do not match
   each other either.
+- **Numbered lines.** `knowledge_read` returns each line as its line number,
+  a tab, and the text, such as `7\t- **CPU:** AMD Ryzen 5 2600X`. Agents cite
+  these numbers. Search matches carry their line number in a separate field.
 - **Limits.** Notes larger than 1 MiB are listed but not read or searched. A
   search returns at most 50 matches (20 by default) and stops after 10
-  seconds. A read returns at most 200 lines and 32 KiB. The
+  seconds. A read returns at most 200 lines and 32 KiB of line text; the
+  line-number prefixes come on top of that. The
   [contract](phase-1-contract.md#initial-limits) lists every limit.
 
 ## Data disclosure
@@ -150,7 +154,7 @@ config = load_config({"KNOWLEDGE_ROOT": "/path/to/knowledge-vault"})
 policy = PathPolicy(config.root)
 request = ReadRequest(path="infrastructure/nas-configuration.md", end_line=20)
 result = read_note(policy, request)
-print(result.content, result.next_line)
+print(result.numbered_content, result.next_line)
 ```
 
 `read_note`, `list_directory`, and `note_info` in

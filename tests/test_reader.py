@@ -67,6 +67,24 @@ def _read(
     return read_note(PathPolicy(root), request, limits=limits)
 
 
+def _text(result: ReadResult) -> str:
+    """Return the note text of a read, after checking each line's number."""
+    lines = result.numbered_content.split("\n")
+    assert lines.pop() == ""
+    if not lines:
+        assert (result.start_line, result.end_line) == (None, None)
+        return ""
+    start = result.start_line
+    assert start is not None
+    assert result.end_line == start + len(lines) - 1
+    text = []
+    for offset, line in enumerate(lines):
+        number, tab, rest = line.partition("\t")
+        assert (number, tab) == (str(start + offset), "\t")
+        text.append(rest + "\n")
+    return "".join(text)
+
+
 # Read: line representation
 
 
@@ -98,9 +116,27 @@ def test_line_representation(
     """BOM removal, CRLF normalization, and LF-only line splitting."""
     _write(tmp_path, "note.md", data)
     result = _read(tmp_path, "note.md")
-    assert result.content == content
+    assert _text(result) == content
     assert result.total_lines == total_lines
     assert result.content_sha256 == hashlib.sha256(data).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("data", "start", "numbered_content"),
+    [
+        (b"first\n\nthird", 1, "1\tfirst\n2\t\n3\tthird\n"),
+        (b"\ta\n  b\n", 1, "1\t\ta\n2\t  b\n"),
+        (TEN_LINES.encode(), 8, "8\t8\n9\t9\n10\t10\n"),
+        (b"", 1, ""),
+    ],
+)
+def test_numbered_lines(
+    tmp_path: Path, data: bytes, start: int, numbered_content: str
+) -> None:
+    """Each line is its number, a tab, and the unchanged text with LF."""
+    _write(tmp_path, "note.md", data)
+    result = _read(tmp_path, "note.md", start)
+    assert result.numbered_content == numbered_content
 
 
 def test_unicode_content_and_path(tmp_path: Path) -> None:
@@ -108,7 +144,7 @@ def test_unicode_content_and_path(tmp_path: Path) -> None:
     _write(tmp_path, "日本語 ノート/café.md", "こんにちは\n世界\n")
     result = _read(tmp_path, "日本語 ノート/café.md")
     assert result.path == "日本語 ノート/café.md"
-    assert result.content == "こんにちは\n世界\n"
+    assert _text(result) == "こんにちは\n世界\n"
 
 
 # Read: ranges and continuation
@@ -141,7 +177,7 @@ def test_ranges_and_eof(
     assert result.next_line == next_line
     assert result.truncated is False
     assert result.total_lines == 10
-    assert result.content == content
+    assert _text(result) == content
 
 
 def test_default_range_uses_limit(tmp_path: Path) -> None:
@@ -180,21 +216,21 @@ def test_byte_limit_continuation(tmp_path: Path) -> None:
     """Stopping at the byte limit reports truncation and the next line."""
     _write(tmp_path, "note.md", "aaa\nbbb\ncc\nd\n")
     first = _read(tmp_path, "note.md", 1, 4, limits=SMALL)
-    assert first.content == "aaa\nbbb\n"
+    assert _text(first) == "aaa\nbbb\n"
     assert (first.start_line, first.end_line, first.next_line) == (1, 2, 3)
     assert first.truncated is True
     rest = _read(tmp_path, "note.md", 3, 4, limits=SMALL)
-    assert rest.content == "cc\nd\n"
+    assert _text(rest) == "cc\nd\n"
     assert rest.next_line is None
     assert rest.truncated is False
-    assert first.content + rest.content == "aaa\nbbb\ncc\nd\n"
+    assert _text(first) + _text(rest) == "aaa\nbbb\ncc\nd\n"
 
 
 def test_small_range_stopping_at_limit_is_not_truncated(tmp_path: Path) -> None:
     """A range that fits exactly is complete even if more lines follow."""
     _write(tmp_path, "note.md", "aaa\nbbb\nccc\n")
     result = _read(tmp_path, "note.md", 1, 2, limits=SMALL)
-    assert result.content == "aaa\nbbb\n"
+    assert _text(result) == "aaa\nbbb\n"
     assert result.next_line == 3
     assert result.truncated is False
 
@@ -204,11 +240,11 @@ def test_limit_counts_utf8_bytes_after_normalization(tmp_path: Path) -> None:
     # Raw line 1 is 9 bytes with its BOM and CRLF, but 8 bytes when returned.
     _write(tmp_path, "crlf.md", b"\xef\xbb\xbfabcdefg\r\nx\n")
     result = _read(tmp_path, "crlf.md", 1, 1, limits=SMALL)
-    assert result.content == "abcdefg\n"
+    assert _text(result) == "abcdefg\n"
     # "ééé" is three characters but six bytes; with LF it is seven bytes.
     _write(tmp_path, "accent.md", "ééé\né\n")
     result = _read(tmp_path, "accent.md", 1, 2, limits=SMALL)
-    assert result.content == "ééé\n"
+    assert _text(result) == "ééé\n"
     assert result.truncated is True
     assert result.next_line == 2
 
@@ -226,7 +262,9 @@ def test_exact_cap_with_default_limit(tmp_path: Path, line: str, fits: bool) -> 
     _write(tmp_path, "cap.md", line)
     if fits:
         result = _read(tmp_path, "cap.md")
-        assert len(result.content.encode()) == DEFAULT_LIMITS.max_read_content_bytes
+        assert len(_text(result).encode()) == DEFAULT_LIMITS.max_read_content_bytes
+        # The "1<TAB>" prefix is not counted.
+        assert result.numbered_content == f"1\t{line}\n"
         assert result.truncated is False
     else:
         code = _error_code(_read, tmp_path, "cap.md")
@@ -237,13 +275,13 @@ def test_later_long_line(tmp_path: Path) -> None:
     """Continuation stops before a long line, which then fails on its own."""
     _write(tmp_path, "note.md", "a\n" + "y" * 20 + "\nb\n")
     first = _read(tmp_path, "note.md", 1, 3, limits=SMALL)
-    assert first.content == "a\n"
+    assert _text(first) == "a\n"
     assert first.next_line == 2
     assert first.truncated is True
     code = _error_code(_read, tmp_path, "note.md", 2, 3, SMALL)
     assert code is DomainErrorCode.LINE_TOO_LONG
     after = _read(tmp_path, "note.md", 3, 3, limits=SMALL)
-    assert after.content == "b\n"
+    assert _text(after) == "b\n"
 
 
 # Read: content and size checks
@@ -427,7 +465,7 @@ def test_close_errors_do_not_leak_descriptors(
     monkeypatch.setattr(os, "close", failing_close)
     result = read_note(policy, ReadRequest(path="a/b/note.md"))
     monkeypatch.undo()
-    assert result.content == "text\n"
+    assert _text(result) == "text\n"
     assert len(os.listdir("/proc/self/fd")) == open_before
 
 
@@ -522,7 +560,7 @@ def test_changes_are_reflected(tmp_path: Path) -> None:
     _write(tmp_path, "note.md", "second\nline\n")
     after = read_note(policy, ReadRequest(path="note.md"))
     info_after = note_info(policy, InfoRequest(path="note.md"))
-    assert after.content == "second\nline\n"
+    assert _text(after) == "second\nline\n"
     assert after.content_sha256 != before.content_sha256
     assert info_after.content_sha256 == after.content_sha256
     assert info_after.content_sha256 != info_before.content_sha256

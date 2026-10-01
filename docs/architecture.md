@@ -225,7 +225,8 @@ This example follows one `knowledge_read` call.
    text into lines.
 5. **Result.** `read_note()` collects lines 1-20 until it reaches the
    requested end, the end of the note, or the content-size limit. The
-   `ReadResult` contains the text, the returned line numbers, `next_line` for
+   `ReadResult` contains the lines, each prefixed with its line number and a
+   tab, the first and last returned line numbers, `next_line` for
    continuing the read, `truncated` if the limit stopped the read early, and a
    hash of the file.
 6. **Response.** The adapter sends the result to the host. If the core raised
@@ -249,6 +250,12 @@ gives the agent a path it can cite. Text inside a note is returned as written,
 even if it contains a path. See
 the [common policy](phase-1-contract.md#configuration-and-common-policy) for
 the exact path rules.
+
+Read results put each line's number in front of its text, so that an agent
+can cite a line without counting lines. In the [retrieval
+evaluation](retrieval-evaluation.md#known-weaknesses), hosts often cited wrong lines
+when a read returned only the first and last line numbers. Search matches
+carry their line number in a separate field.
 
 ### Git ignore rules do not hide notes
 

@@ -1,8 +1,7 @@
 # Implementation tasks
 
-Run these sequentially. Tasks 1–6 are complete; their entries below keep only
-what exists and what later tasks need. Task 6a records the retrieval
-evaluation before web integration. Tasks 7–9 outline the vault owner's next
+Run these sequentially. Tasks 1–6a are complete; their entries below keep
+only what exists and what later tasks need. Tasks 7–9 outline the vault owner's next
 priority, web access; finalize route-specific details in Task 7 before coding
 or deploying that integration. Define tasks for retrieval upgrades from the
 evaluation findings. Check the status of the [workflow improvement
@@ -137,39 +136,36 @@ What Task 6a needs to know:
 - `codex exec` waits for stdin unless stdin is closed, for example with
   `< /dev/null`.
 
-## Task 6a — Record repeatable retrieval evaluation
+## Task 6a — Record repeatable retrieval evaluation (complete)
 
-Depends on: Task 6. This implements milestone 2.
+[`docs/retrieval-evaluation.md`](retrieval-evaluation.md) holds 19 questions
+about the sample notes in `tests/fixtures/vault/`, in English and Japanese,
+including questions with no answer, decomposed Unicode, and two long notes.
+It describes how to run and grade the questions, and holds the baseline
+results from three host configurations and the known weaknesses.
+`tests/test_retrieval_evaluation.py` repeats the reference queries and checks
+the answer lines. The initial limits stay unchanged.
 
-Create `docs/retrieval-evaluation.md` with a small predefined question set and
-expected source notes. Store the invented notes in `tests/fixtures/vault/`,
-reusing suitable existing fixtures. Include English and Japanese examples,
-questions with no answer in the notes, and the known Unicode matching
-limitation. Record the natural-language question separately from the literal
-search queries so a failed result can be traced to query choice, matching,
-reading, or citation.
+On 2026-10-01 the vault owner adopted numbered read lines: `knowledge_read`
+returns `numbered_content`, with each line's number and a tab before its text.
+With the earlier format, which returned only the first and last line numbers,
+hosts cited wrong lines in 13 of 42 runs. With numbered lines, no cited line
+was off in 57 runs, and 4 runs, all from Haiku, cited only part of the
+supporting passage. The two long notes were added between the rounds.
 
-Acceptance:
+What later tasks need to know:
 
-- Each example names its invented source notes and expected answer or no-answer
-  outcome. Run the questions through the local host and record the actual
-  queries, retrieved paths, and whether the cited text supports the answer.
-- Add repeatable search/read assertions to the automated tests for the literal
-  queries and expected results. Tests depend only on the invented notes, not a
-  model provider or personal vault.
-- Record failures and their causes in the evaluation document. Use these
-  examples to compare future retrieval changes.
-- Review the initial limits against the observed results. Record whether
-  adjustments are justified; apply any chosen adjustment to the code, contract,
-  and tests together.
-- Record NFC-equivalent matching as an important deferred feature and assess
-  the demonstrated missed matches before proposing broader search upgrades. Its
-  implementation requires a specification for normalized search input and
-  original-text snippets; width matching remains a separate decision.
-
-The vault owner may also evaluate personal notes privately. This is optional;
-keep private questions, excerpts, paths, and results outside committed files
-and automated fixtures.
+- Decomposed Unicode caused a false no-answer result in 7 of 12 runs where
+  the decomposed word was the only way to the note. NFC-equivalent matching
+  is the most important deferred search feature; it needs a specification for
+  normalized search input and original-text snippets.
+- Questions with no answer cost up to 28 tool calls. Queries that combine
+  separate keywords find nothing, because the query is one literal string.
+- Codex usually runs shell commands in its working directory before it calls
+  the tools, and in 3 of 39 runs it made no tool calls. Start evaluation hosts
+  in an empty directory away from the vault copy.
+- Task 7 can rerun the question set through the web client to check its tool
+  use and citations.
 
 ## Task 7 — Choose and validate the first web-client route
 

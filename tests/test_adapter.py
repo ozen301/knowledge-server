@@ -196,7 +196,7 @@ def test_server_lists_four_tools_with_contract_schemas(vault: Path) -> None:
     }
     assert properties(tools["knowledge_read"].output_schema or {}) == {
         "path",
-        "content",
+        "numbered_content",
         "start_line",
         "end_line",
         "total_lines",
@@ -287,7 +287,7 @@ def test_empty_results_are_successes_not_errors(vault: Path) -> None:
     )
     assert _success(search)["matches"] == []
     assert _success(listing)["entries"] == []
-    assert _success(read)["content"] == ""
+    assert _success(read)["numbered_content"] == ""
 
 
 # Argument and domain errors

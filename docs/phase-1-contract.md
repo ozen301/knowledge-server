@@ -67,9 +67,10 @@ define the resulting codes and the remaining order of checks.
 
 ## Initial limits
 
-These values are enforced in Phase 1 and reviewed after the retrieval
-evaluation in Task 6a. Tests may inject smaller limits to exercise boundaries
-without large or slow fixtures.
+These values are enforced in Phase 1. The [retrieval
+evaluation](retrieval-evaluation.md#limit-review) found no reason to change
+them. Tests may inject smaller limits to exercise boundaries without large or
+slow fixtures.
 
 | Setting | Initial value |
 |---|---|
@@ -78,7 +79,7 @@ without large or slow fixtures.
 | Search results: default / maximum | 20 / 50 |
 | Maximum snippet length | 300 Unicode code points |
 | Read range: default / maximum | 200 / 200 lines |
-| Maximum returned read content | 32 KiB of UTF-8 text |
+| Maximum returned read content | 32 KiB of UTF-8 line text, without line-number prefixes |
 | Directory page: default / maximum | 100 / 200 entries |
 | Search deadline for the full operation | 10 seconds |
 | Maximum filesystem entries visited per search | 10,000 |
@@ -278,13 +279,22 @@ knowledge_read(path: str, start_line: int = 1, end_line: int | null = null)
   read range.
 - Negative/zero line numbers, reversed ranges, and oversized requested ranges
   are invalid. Clamp the actual end to EOF.
-- Starting after EOF succeeds with empty content and null actual line bounds.
+- Starting after EOF succeeds with empty `numbered_content` and null actual
+  line bounds.
   Return `total_lines` so the caller can recover.
-- Return whole lines. Every returned line ends with LF, including a last line
-  that has no final newline in the file, so consecutive pages join by
-  concatenation. When no lines are returned, `content` is empty.
-- The returned-content limit counts the UTF-8 bytes of `content`: after BOM
-  removal and CRLF normalization, and including each line's LF. If the next
+- Return whole lines in `numbered_content`. Each line is its line number in
+  decimal without padding, a tab, the line text, and LF, for example
+  `7\t- **CPU:** AMD Ryzen 5 2600X\n`. Blank lines are included. Every
+  returned line ends with LF, including a last line that has no final newline
+  in the file, so consecutive pages join by concatenation. Removing the number
+  and tab from each line gives the note text. When no lines are returned,
+  `numbered_content` is empty. The numbers let a caller cite a line without
+  counting lines; the [retrieval
+  evaluation](retrieval-evaluation.md#known-weaknesses) showed that hosts miscounted
+  lines when the read returned only the range bounds.
+- The returned-content limit counts the UTF-8 bytes of the line text, without
+  the number prefixes: after BOM removal and CRLF normalization, and including
+  each line's LF. The prefixes do not change where a read stops. If the next
   line would exceed the limit, stop before it and provide continuation. If the
   first requested line alone exceeds the limit, return `LINE_TOO_LONG` rather
   than silently slicing it. With the 32 KiB limit, a line of 32,767 bytes plus
@@ -298,8 +308,8 @@ knowledge_read(path: str, start_line: int = 1, end_line: int | null = null)
   the bytes used for this response, including uncommitted edits; it does not
   guarantee a filesystem snapshot.
 
-Result fields: `path`, `content`, `start_line` and `end_line` (actual bounds or
-null), `total_lines`, `next_line`, `truncated`, `content_sha256`.
+Result fields: `path`, `numbered_content`, `start_line` and `end_line` (actual
+bounds or null), `total_lines`, `next_line`, `truncated`, `content_sha256`.
 
 Examples for a file of ten short lines, unless stated otherwise:
 
@@ -308,7 +318,7 @@ Examples for a file of ten short lines, unless stated otherwise:
 | lines 1-5 | 1, 5 | 6 | false |
 | lines 6-10, or `start_line=6` with the default range | 6, 10 | null | false |
 | lines 8-20 | 8, 10 | null | false |
-| `start_line=11` | null, null (`content` is empty) | null | false |
+| `start_line=11` | null, null (`numbered_content` is empty) | null | false |
 | lines 1-10, where the byte limit is reached after line 4 | 1, 4 | 5 | true |
 | `start_line=5` in that file, where line 5 alone exceeds the limit | `LINE_TOO_LONG` error | | |
 

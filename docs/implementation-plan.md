@@ -145,8 +145,10 @@ and reader instead of forcing those formats into today's line model. Likewise,
 add explicit ranked or hybrid search modes rather than changing literal mode.
 
 NFC-equivalent matching is an important follow-up because visually identical
-Unicode text can use different character sequences. Task 6a evaluates this
-limitation before larger retrieval upgrades. Any implementation must search
+Unicode text can use different character sequences. The [retrieval
+evaluation](retrieval-evaluation.md#deferred-nfc-equivalent-matching) showed
+false no-answer results when the decomposed word was the only way to a note.
+Any implementation must search
 normalized text while returning snippets, paths, and line numbers from the
 original source. Width equivalence is a separate decision.
 

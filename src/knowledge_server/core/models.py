@@ -332,10 +332,11 @@ class ReadResult(ContractModel):
     """Result of reading a range of lines from one note."""
 
     path: str = Field(description="Note that was read, relative to the vault root.")
-    content: str = Field(
+    numbered_content: str = Field(
         description=(
-            "Returned lines. Each line ends with a line feed, so consecutive "
-            "pages can be joined directly."
+            "Returned lines. Each line is its line number, a tab, the line "
+            "text, and a line feed, so a citation can use the number directly. "
+            "Consecutive pages can be joined directly."
         )
     )
     start_line: StrictPositiveInt | None = Field(

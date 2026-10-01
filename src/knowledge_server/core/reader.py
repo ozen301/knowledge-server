@@ -160,8 +160,9 @@ def read_note(
 ) -> ReadResult:
     """Read a range of whole lines from a note.
 
-    The read stops early, with `truncated` set, before a line that would make
-    the content exceed `limits.max_read_content_bytes`.
+    Each returned line is prefixed with its line number and a tab. The read
+    stops early, with `truncated` set, before a line that would make the line
+    text exceed `limits.max_read_content_bytes`; the prefixes do not count.
 
     Args:
         policy: The policy for the vault root.
@@ -198,7 +199,7 @@ def read_note(
     if start > total_lines:
         return ReadResult(
             path=resolved.relative_path,
-            content="",
+            numbered_content="",
             start_line=None,
             end_line=None,
             total_lines=total_lines,
@@ -208,7 +209,9 @@ def read_note(
         )
 
     # Add whole lines until the range ends or the next line would exceed the
-    # content limit. `end` is the last line added so far.
+    # content limit. The limit counts the line text, not the number prefixes,
+    # so the prefixes never change where a read stops. `end` is the last line
+    # added so far.
     last_requested = min(requested_end, total_lines)
     parts: list[str] = []
     used_bytes = 0
@@ -220,13 +223,13 @@ def read_note(
             if not parts:
                 raise KnowledgeError(DomainErrorCode.LINE_TOO_LONG)
             break
-        parts.append(line)
+        parts.append(f"{number}\t{line}")
         used_bytes += line_bytes
         end = number
 
     return ReadResult(
         path=resolved.relative_path,
-        content="".join(parts),
+        numbered_content="".join(parts),
         start_line=start,
         end_line=end,
         total_lines=total_lines,

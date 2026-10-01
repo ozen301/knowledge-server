@@ -26,9 +26,9 @@ class Limits:
         default_read_lines: Number of lines a read returns when the caller does
             not set `end_line`.
         max_read_lines: Largest line range one read request may ask for.
-        max_read_content_bytes: Largest `content` one read returns, in UTF-8
-            bytes after newline normalization. A read stops before a line
-            that would exceed it.
+        max_read_content_bytes: Most line text one read returns, in UTF-8
+            bytes after newline normalization and without the line-number
+            prefixes. A read stops before a line that would exceed it.
         default_directory_page: Number of entries a listing returns when the
             caller does not set `limit`.
         max_directory_page: Largest `limit`, that is, the most entries one

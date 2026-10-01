@@ -88,3 +88,5 @@ script locally before merging `dev`.
   boundaries.
 - [Implementation tasks](docs/implementation-tasks.md): ordered tasks,
   acceptance criteria, and progress.
+- [Retrieval evaluation](docs/retrieval-evaluation.md): fixed questions about
+  the sample notes and the results from local hosts.
