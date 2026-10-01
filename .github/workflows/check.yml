@@ -1,10 +1,13 @@
 name: Check
 
-# Only main is checked. The dev branch holds work in progress that may not
-# pass yet; validate it locally with scripts/check.
+# Pushes to main are checked automatically. Other branches can hold work in
+# progress that does not pass yet, so check one only on request: push it, then
+# run `gh workflow run check.yml --ref <branch>` or use "Run workflow" in the
+# Actions tab.
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read

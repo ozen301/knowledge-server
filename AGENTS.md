@@ -92,7 +92,9 @@ work.
 After code or configuration changes, run `scripts/check`. It installs the
 locked dependencies, runs the formatting, lint, type, and test checks, checks
 for whitespace errors, and summarizes the results. CI runs
-`scripts/check --ci` on pushes to `main` only, so validate `dev` locally. For
+`scripts/check --ci` automatically on pushes to `main` and, on request, on
+another pushed branch: start it from the Actions tab or with
+`gh workflow run check.yml --ref <branch>`. Validate unpushed work locally. For
 documentation-only changes, check whitespace, links, claims, and examples.
 Repeat checks only after further changes or when investigating a failure.
 
