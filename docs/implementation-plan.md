@@ -1,6 +1,6 @@
 # Implementation plan
 
-Status: agreed plan, updated 2026-09-22. The
+Status: agreed plan, updated 2026-10-02. The
 [implementation tasks](implementation-tasks.md) track progress.
 
 ## Outcome
@@ -12,76 +12,32 @@ before adding indexing, document conversion, or remote hosting.
 The existing Markdown files remain authoritative. Any future database,
 extracted text, or embedding index must be rebuildable from original sources.
 
-This plan records the architecture, rationale, and roadmap. The
-[Phase 1 contract](phase-1-contract.md) defines exact tool behavior, while the
-[implementation tasks](implementation-tasks.md) define the implementation order
-and acceptance checks.
+This plan records the design decisions, their reasons, and the roadmap. The
+[architecture overview](architecture.md) describes the components that exist,
+the [Phase 1 contract](phase-1-contract.md) defines exact tool behavior, and
+the [implementation tasks](implementation-tasks.md) define the implementation
+order and acceptance checks.
 
 ## Scope and context
 
-Phase 1 uses Python, uv, ripgrep, and the official MCP Python SDK v2. It exposes
-four read-only tools over stdio: `knowledge_search`, `knowledge_read`,
-`knowledge_list`, and `knowledge_info`. The server reads the local vault
-checkout, configured through `KNOWLEDGE_ROOT`; the NAS-hosted Git remote is
-used for synchronization and is not searchable.
+Phase 1 uses Python 3.14 or later, uv, ripgrep, and the official MCP Python
+SDK v2 (`mcp>=2.2,<3`). It exposes four read-only tools over stdio:
+`knowledge_search`, `knowledge_read`, `knowledge_list`, and `knowledge_info`.
+The server reads the local vault checkout, configured through
+`KNOWLEDGE_ROOT`; the NAS-hosted Git remote is used for synchronization and is
+not searchable.
 
 Development starts on an Ubuntu VM, with eventual production hosting on
-Unraid. After local validation, the next priority is connecting a ChatGPT or
-Claude web client. Better retrieval, additional document formats and
-collections, and controlled writing remain later possibilities.
+Unraid. After local validation, the next priority is connecting ChatGPT
+through the [web access route](#web-access-route). Better retrieval,
+additional document formats and collections, and controlled writing remain
+later possibilities.
 
-## Architecture
-
-```text
-MCP host in VM
-    | launches a subprocess; communicates over stdio
-    v
-MCP adapter: schemas, descriptions, error mapping
-    |
-    v
-Knowledge core: access policy, read/list/info, literal search
-    |
-    v
-Local vault checkout: KNOWLEDGE_ROOT
-```
-
-Keep this in one Python package and one process. The core must not import the
-MCP SDK. Use ordinary typed functions and data models; avoid a plugin framework,
-dependency-injection container, or generic database abstraction before a
-second backend exists.
-
-Planned application and test layout (supporting tooling omitted):
-
-```text
-src/knowledge_server/
-    __init__.py
-    __main__.py          # startup checks and stdio launch
-    config.py            # explicit configuration
-    core/
-        __init__.py
-        models.py        # requests, results, and domain errors
-        limits.py        # shared initial resource limits
-        paths.py         # shared path and visibility policy
-        reader.py        # bounded file loading, read/list/info
-        search.py        # controlled ripgrep execution
-    adapter/
-        __init__.py
-        server.py        # four thin tool wrappers
-tests/
-    fixtures/vault/      # invented notes only
-    test_paths.py
-    test_config.py
-    test_models.py
-    test_core_boundary.py
-    test_reader.py
-    test_search.py
-    test_adapter.py
-```
-
-Target Python 3.14 or later and constrain the official SDK to `mcp>=2.2,<3`.
-Use pytest, Ruff, and Pyright. A smoke test in `tests/test_scaffold.py`
-verifies the installed SDK's imports and stdio startup and shutdown. Check SDK
-details against the installed version, not tutorial code.
+The server is one Python package that runs as one process: an MCP adapter
+over an MCP-free knowledge core. Use ordinary typed functions and data models;
+avoid a plugin framework, dependency-injection container, or generic database
+abstraction before a second backend exists. Check SDK details against the
+installed version, not tutorial code.
 
 ## Decisions to preserve
 
@@ -115,27 +71,61 @@ or container and appropriately limited mounts.
 
 | Milestone | Build | Exit condition |
 |---|---|---|
-| 1. Local read-only MVP | Four stdio tools, shared path policy, synthetic tests | A real host can search, read, and cite an invented note; denied paths and output limits work |
-| 2. Retrieval evaluation | Predefined questions over invented English and Japanese notes | Results and failure causes are recorded; initial limits and Unicode matching are reviewed |
-| 3. Web access | Select and validate a ChatGPT or Claude connection route, then deploy it securely | The chosen client can authenticate, search, read, and cite a note |
+| 1. Local read-only MVP (complete) | Four stdio tools, shared path policy, synthetic tests | A real host can search, read, and cite an invented note; denied paths and output limits work |
+| 2. Retrieval evaluation (complete) | Predefined questions over invented English and Japanese notes | Results and failure causes are recorded; initial limits and Unicode matching are reviewed |
+| 3. Web access | Authenticated Streamable HTTP entry point behind Cloudflare Access and Tunnel; synthetic ChatGPT trial, hardening, then authorized real-vault use | ChatGPT, signed in as the vault owner, can search, read, and cite a note; other identities are refused |
 | 4. Better lexical retrieval, if needed | SQLite metadata and FTS5 with a rebuildable index | Measured retrieval or latency improves; stale and missing sources are handled |
 | 5. Additional formats | Add one format at a time, likely text-based PDF first | Hits remain traceable to the original file and page or section |
 | 6. Semantic retrieval, if needed | Evaluate multilingual embeddings and hybrid ranking | The saved evaluation improves while exact search and CPU-only operation remain useful |
 | 7. Additional collections | Explicitly configured roots such as notes, papers, and projects | Source identity and filtering are consistent across tools and caches |
 | 8. Controlled writing, optional | Separate proposal or inbox workflow with vault-owner review | Proposals cannot mutate canonical notes through the read-only service |
 
-Web access does not depend on vector search or NAS-wide indexing. At that
-milestone, first check the selected account and client capabilities. Prefer a
-supported private tunnel to the stdio service when available; otherwise use an
-authenticated Streamable HTTP endpoint reachable by the selected provider.
+Web access does not depend on vector search or NAS-wide indexing.
 Authentication, source-access policy, TLS, resource limits, and restricted
 runtime mounts are part of remote exposure, not later cleanup.
 
 For production, use a dedicated local vault checkout or a read-only
 materialized snapshot. Keep synchronization outside the MCP process and handle
 conflicts explicitly. A bare Git remote alone cannot serve as the readable
-collection. Tasks 7-9 defer route-specific decisions until current provider
-capabilities and the vault owner's account access can be verified.
+collection.
+
+## Web access route
+
+Decided on 2026-10-02; not implemented. ChatGPT is the first web client,
+tested at first with a personal ChatGPT Plus account. It connects to a public
+HTTPS endpoint on a Cloudflare-managed domain. Cloudflare Access, with Managed
+OAuth and an owner-only policy, signs the vault owner in; Cloudflare Tunnel
+then forwards each request, with a signed assertion, to a new HTTP entry point
+in the adapter layer. The core stays MCP-free, and stdio and the four tool
+contracts stay unchanged. The [web access plan](web-access.md) specifies the
+route, and Tasks 7–9 implement it.
+
+Reasons for this route:
+
+- OpenAI's Secure MCP Tunnel required an account association that could not
+  be established. This route does not depend on it.
+- Cloudflare acts as the OAuth authorization server, so the project
+  implements no OAuth server. ChatGPT's documented OAuth requirements for
+  MCP servers ([OpenAI's authentication
+  guide](https://developers.openai.com/plugins/build/auth)) are the
+  compatibility target; the live trial confirms whether the integration
+  works.
+- cloudflared connects outbound, so no inbound router port forwarding is
+  needed. Tailscale remains the private administration network.
+- The origin also validates Cloudflare's signed assertion and the pinned
+  owner identity, so a request that reaches it without passing Access cannot
+  use the tools.
+
+Accepted limitations: Managed OAuth is a Beta feature; Cloudflare handles
+decrypted traffic and keeps provider-side logs; immediate revocation of issued
+tokens after a policy change is not guaranteed; and compatibility between
+ChatGPT, Managed OAuth, and the SDK's HTTP transport is unproven until the
+first trial. These are rechecked before real-vault use, as the web access plan
+describes.
+
+WorkOS AuthKit is a contingency only if a demonstrated compatibility or
+identity limitation of Managed OAuth survives debugging; selecting it would
+need a new design review.
 
 ## Deferred retrieval decisions
 
@@ -148,9 +138,9 @@ NFC-equivalent matching is an important follow-up because visually identical
 Unicode text can use different character sequences. The [retrieval
 evaluation](retrieval-evaluation.md#deferred-nfc-equivalent-matching) showed
 false no-answer results when the decomposed word was the only way to a note.
-Any implementation must search
-normalized text while returning snippets, paths, and line numbers from the
-original source. Width equivalence is a separate decision.
+Any implementation must search normalized text while returning snippets,
+paths, and line numbers from the original source. Width equivalence is a
+separate decision.
 
 SQLite FTS5, document converters, and vector stores are candidates for their
 respective milestones, not Phase 1 dependencies. Choose them only after the
@@ -158,8 +148,8 @@ repeatable evaluation demonstrates a need.
 
 ## Implementation process
 
-Follow the [implementation tasks](implementation-tasks.md) in order and apply
-the repository workflow in [AGENTS.md](../AGENTS.md). Implement and review one
-task at a time; do not add future backend abstractions solely to mirror this
-roadmap. Revise the plan when evidence changes a decision, and keep exact
-behavior in the contract and tests.
+Implement and review one task at a time, in the order of the [implementation
+tasks](implementation-tasks.md), with the workflow in
+[AGENTS.md](../AGENTS.md). Do not add future backend abstractions solely to
+mirror this roadmap. Revise the plan when evidence changes a decision, and
+keep exact behavior in the contract and tests.

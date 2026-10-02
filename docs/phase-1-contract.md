@@ -2,7 +2,9 @@
 
 Status: agreed implementation contract, updated 2026-09-29. The
 [implementation tasks](implementation-tasks.md) track progress. Changes should
-update this document and the corresponding tests together.
+update this document and the corresponding tests together. The planned [web
+access](web-access.md) route serves these tools with the same behavior over
+HTTP.
 
 ## Configuration and common policy
 

@@ -135,10 +135,15 @@ Conventions:
   cards."
 - Avoid filler and canned conclusions such as "leverage," "it's worth noting,"
   "Bottom Line," and "In short."
-- Keep detailed task progress in `docs/implementation-tasks.md`; other
-  documents link to it. The README may summarize the capabilities available
-  now. When a task is complete, shorten its entry to what exists, where it is,
-  and what later tasks need to know; Git history keeps the full instructions.
+- Keep detailed progress in `docs/implementation-tasks.md`; summarize current
+  capabilities in the README. Shorten each completed task to what exists,
+  where it is, and what later tasks need to know.
+- Within the task's scope, remove obsolete text, finished plan details, and
+  duplication. Preserve active requirements, open decisions, operational
+  caveats, and reproducible evidence.
+- Explain each topic in one place; summarize and link elsewhere. Git preserves
+  history, so delete removed text instead of moving it to an appendix or
+  archive.
 - Wrap prose at about 80 columns. Tables, code, and long URLs are exempt.
 
 ## Docstrings and comments

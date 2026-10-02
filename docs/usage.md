@@ -6,7 +6,9 @@ short version. The [Phase 1 contract](phase-1-contract.md) defines the exact
 tool behavior.
 
 The MCP host starts the server as a subprocess and talks to it over stdin and
-stdout. You do not start the server yourself.
+stdout. You do not start the server yourself. This local connection is the
+only one the server supports. Remote access for ChatGPT is planned in the
+[web access plan](web-access.md) but not implemented.
 
 ## Requirements
 
