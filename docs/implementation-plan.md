@@ -91,14 +91,16 @@ collection.
 
 ## Web access route
 
-Decided on 2026-10-02; not implemented. ChatGPT is the first web client,
-tested at first with a personal ChatGPT Plus account. It connects to a public
-HTTPS endpoint on a Cloudflare-managed domain. Cloudflare Access, with Managed
-OAuth and an owner-only policy, signs the vault owner in; Cloudflare Tunnel
-then forwards each request, with a signed assertion, to a new HTTP entry point
-in the adapter layer. The core stays MCP-free, and stdio and the four tool
-contracts stay unchanged. The [web access plan](web-access.md) specifies the
-route, and Tasks 7–9 implement it.
+Decided on 2026-10-02. ChatGPT is the first web client, tested at first with
+a personal ChatGPT Plus account. It connects to a public HTTPS endpoint on a
+Cloudflare-managed domain. Cloudflare Access, with Managed OAuth and an
+owner-only policy, signs the vault owner in; Cloudflare Tunnel then forwards
+each request, with a signed assertion, to an HTTP entry point in the adapter
+layer. The core stays MCP-free, and stdio and the four tool contracts stay
+unchanged. The [web access plan](web-access.md) specifies the route, and
+Tasks 7–9 implement it. The HTTP entry point exists for a local synthetic
+trial; the [implementation tasks](implementation-tasks.md) track the
+remaining provisioning and live verification.
 
 Reasons for this route:
 

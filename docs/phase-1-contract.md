@@ -1,21 +1,26 @@
 # Phase 1 tool contract
 
-Status: agreed implementation contract, updated 2026-09-29. The
+Status: agreed implementation contract, updated 2026-10-04. The
 [implementation tasks](implementation-tasks.md) track progress. Changes should
-update this document and the corresponding tests together. The planned [web
-access](web-access.md) route serves these tools with the same behavior over
-HTTP.
+update this document and the corresponding tests together. The protected
+[HTTP entry point](web-access.md#local-http-implementation-contract) serves
+these tools with the same behavior; public web access through it is not yet
+verified.
 
 ## Configuration and common policy
 
-- `KNOWLEDGE_ROOT` is required and points to the local vault checkout. It must
-  be an explicit absolute path to an existing directory that is readable and
-  searchable. It is resolved once on startup, and a root symlink may resolve at
-  that point. The server reads its files directly; it does not require or
-  inspect Git metadata and does not run Git commands. Example value:
-  `/path/to/knowledge-vault`; replace it with a local absolute path. Never
-  default to the process working directory, home directory, or NAS-hosted Git
-  remote.
+- For stdio, `KNOWLEDGE_ROOT` is required and points to the local vault
+  checkout. The synthetic HTTP launcher ignores it and takes the root from
+  its private configuration file, then checks that the root holds exactly the
+  invented sample notes ([launch
+  configuration](web-access.md#launch-configuration)). Either way, the root
+  must be an explicit absolute path to an existing directory that is readable
+  and searchable. It is resolved once on startup, and a root symlink may
+  resolve at that point. The server reads its files directly; it does not
+  require or inspect Git metadata and does not run Git commands. Example
+  value: `/path/to/knowledge-vault`; replace it with a local absolute path.
+  Never default to the process working directory, home directory, or
+  NAS-hosted Git remote.
 - Root visibility is all non-hidden Markdown notes. Tool arguments cannot
   expand access beyond the configured root and common policy.
 - API paths use `/`, relative to the configured root. Empty string means the

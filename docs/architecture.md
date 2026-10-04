@@ -22,8 +22,11 @@ the server returns, not instructions for the server.
 
 ## The big picture
 
-The server is one Python package that runs as one process. It currently
-serves the tools only over stdio. Requests pass through three layers:
+The server is one Python package that runs as one process. It serves the
+tools over stdio and, for a trial with invented notes, through a [protected
+HTTP entry point](#protected-http-entry-point) on loopback. Requests pass
+through three layers. This diagram shows the stdio route; HTTP requests
+enter through `adapter/http*.py` and use the same tools, core, and policy:
 
 ```text
 MCP host (for example, a desktop AI client)
@@ -32,6 +35,7 @@ MCP host (for example, a desktop AI client)
 MCP adapter
     adapter/server.py  - four tool wrappers, schemas, error translation
     __main__.py        - startup checks and stdio launch
+    adapter/http*.py   - protected HTTP entry point (synthetic trial only)
     |
     v
 Knowledge core
@@ -44,8 +48,11 @@ Knowledge core
 Local vault checkout (the directory named by KNOWLEDGE_ROOT)
 ```
 
-`config.py` sits beside these layers. It reads `KNOWLEDGE_ROOT` once when the
-server starts and never guesses a default root.
+`config.py` sits beside these layers and validates the root once at startup;
+it never guesses a default root. For stdio, the root comes from the
+`KNOWLEDGE_ROOT` environment variable. The HTTP launcher ignores that
+variable: it takes the root from its explicit configuration file and passes
+it to the same validation.
 
 The layers are separate for these reasons:
 
@@ -165,15 +172,132 @@ objects directly, with an argument model that passes the raw arguments
 through to the request model. These SDK classes are not in its public exports,
 so check the adapter when upgrading the SDK.
 
-## Planned: web access (not implemented)
+### Protected HTTP entry point
 
-The server has no HTTP or authentication entry point yet. The [web access
-plan](web-access.md) specifies a route for ChatGPT: Cloudflare Access and
-Cloudflare Tunnel forward authenticated requests to a new HTTP entry point in
-the adapter layer, which validates Cloudflare's signed assertion and serves
-the same four tools over MCP Streamable HTTP. The core and the stdio entry
-point stay unchanged. Cloudflare terminates TLS, so it handles decrypted
-requests and responses.
+The `knowledge-server-http` command is a second way to reach the same four
+tools: over HTTP instead of stdio. Currently it is a local launcher for a trial
+with invented notes only. It listens on `127.0.0.1` (loopback), so only
+programs on the same machine can connect. The public route and the live
+ChatGPT trial are not set up yet.
+
+In the planned route, which the [web access plan](web-access.md) describes
+and no live test has confirmed, ChatGPT will reach the server through
+Cloudflare:
+
+```text
+ChatGPT
+    -> Cloudflare Access (vault owner sign-in with Managed OAuth)
+    -> Cloudflare Tunnel
+    -> cloudflared on the Ubuntu VM
+    -> knowledge-server-http on 127.0.0.1 on the same VM
+```
+
+Cloudflare Access will protect the public hostname, and its Managed OAuth
+feature will act as the OAuth server for ChatGPT's sign-in, so this server
+implements no OAuth. cloudflared will open an outbound connection to
+Cloudflare Tunnel, so the router needs no open inbound port. Cloudflare will
+decrypt the traffic at its edge and serve the OAuth discovery documents.
+
+Each HTTP request passes a gate before any MCP handling, then reaches the
+same tools, knowledge core, and path policy as stdio:
+
+```text
+HTTP request
+    -> gate: Host, then Origin, then Cloudflare Access assertion
+    -> SDK Streamable HTTP at /mcp (stateless, JSON responses)
+    -> the same four tools -> knowledge core -> trial directory
+```
+
+Streamable HTTP is the MCP SDK's transport for MCP over HTTP. The server
+runs it in stateless mode, so it keeps no MCP session between requests, and
+it answers with plain JSON instead of an event stream. Whether ChatGPT works
+with this mode is not yet known; the live trial will show it.
+
+The gate first checks two ordinary HTTP headers. The `Host` header names the
+hostname that the client wanted to reach; the gate accepts only the
+configured public hostname and the loopback names. The `Origin` header, which
+browsers and some other clients send, names the site that started the
+request: a scheme, a host, and an optional port, such as
+`https://example.com`. The `allowed_origins` setting lists the exact values
+that the gate accepts. It is not a list of users and does not authenticate
+anyone. A request without `Origin` passes this check, because clients such
+as ChatGPT may not send it, but it still needs a valid assertion. With the
+default empty list, any request that sends `Origin` is refused.
+
+Authentication relies on the Cloudflare Access assertion. When Access lets a
+request through, it adds a `Cf-Access-Jwt-Assertion` header that holds a JSON
+Web Token (JWT): a set of claims about the user, the Access application, and
+the token's validity period, signed by Cloudflare. The server does not trust
+any user name that a request states. It verifies the signature with
+Cloudflare's public keys and then checks the claims:
+
+- The issuer (`iss`) must be exactly the HTTPS URL of the configured team
+  domain. The team domain is the domain of the vault owner's Cloudflare Zero
+  Trust organization, configured without a scheme, such as
+  `myteam.cloudflareaccess.com`; the expected issuer is then
+  `https://myteam.cloudflareaccess.com`, with no trailing slash. The team
+  domain also fixes the only URL from which the server fetches Cloudflare's
+  signing keys.
+- The audience (`aud`) must contain the configured application AUD, a tag
+  that identifies one Access application. A token that Access issued for
+  another application is refused.
+- The token must not have expired.
+- The subject (`sub`), Cloudflare's identifier for the signed-in user, must
+  exactly equal the configured `owner_subject`. This pinned owner subject is
+  the vault owner's identifier, verified privately during provisioning and
+  then fixed in the configuration. The server never learns it from a caller.
+  Tokens issued to service credentials instead of users are refused.
+
+The OAuth access token that ChatGPT sends in the `Authorization` header is
+meant for Cloudflare and never authenticates a request here. A request that
+fails any check is refused with a fixed message before the MCP SDK sees it.
+Because Host and Origin are checked first, a request that fails them cannot
+make the server fetch keys.
+
+The server fetches Cloudflare's public signing keys only from the one URL
+that the team domain determines, within limits on time, size, and number of
+keys, and caches them. A token signed with an unknown key can trigger a
+rate-limited refresh, which supports Cloudflare's key rotation. If no
+suitable key is available, the request is refused.
+
+The launcher reads one private TOML file, named on the command line, that
+holds the trial directory and the Access settings above. It ignores
+`KNOWLEDGE_ROOT` and `.env` files, so an environment prepared for stdio
+cannot point the HTTP server at the real vault. The directory still passes
+the same root validation in `config.py`. A separate check restricts the trial
+to invented notes: before serving, the launcher compares the directory with
+`synthetic-vault.json`, a packaged list of the sample notes and their SHA-256
+digests, and does not start if anything differs. This check runs only at
+startup, and the tools read the directory live afterwards, so keep the
+directory dedicated to the invented notes while the server runs.
+
+The code is in `adapter/`:
+
+- `http_main.py` starts the server. It loads the configuration with
+  `http_config.py`, runs the check in `synthetic.py`, and starts Uvicorn, the
+  web server, on `127.0.0.1`. Uvicorn does not apply proxy headers such as
+  `X-Forwarded-For`, so a request cannot use them to change its apparent
+  client address or scheme. If the application's startup step fails, the
+  launch fails.
+- `http.py` creates the SDK's ASGI application (ASGI is Python's standard
+  interface between web servers and applications) and wraps all of it, on
+  every path, in `HTTPApplication`, the gate described above. The gate
+  forwards the server's startup and shutdown events to the SDK. It adds
+  `Cache-Control: no-store` to every response that the application sends,
+  which tells caches not to store the response. Error responses that Uvicorn
+  generates itself are outside this guarantee, and Cloudflare's live cache
+  behavior has not been verified.
+- `http_auth.py` holds the key cache (`CachedKeys`) and the assertion check
+  (`AssertionVerifier`, built on PyJWT), which returns only yes or no.
+- `http_logging.py` restricts the HTTP process's log to fixed startup
+  categories and each request's method, status, and latency. It drops all
+  other diagnostics, which could contain tokens, headers, queries, or note
+  text.
+
+The [HTTP contract](web-access.md#local-http-implementation-contract) gives
+the exact settings, checks, and limits, and the [owner
+identity](web-access.md#owner-identity) section explains how the owner subject
+is established.
 
 ## Design choices worth knowing
 
@@ -207,6 +331,7 @@ follow a symlink even after the policy check has passed.
   error codes.
 - [Implementation plan](implementation-plan.md): decisions, their reasons, and
   later milestones.
-- [Web access plan](web-access.md): the planned remote route for ChatGPT.
+- [Web access plan](web-access.md): the remote route for ChatGPT and the
+  HTTP entry point's exact contract.
 - [Implementation tasks](implementation-tasks.md): progress and the next task.
 - [Repository guide](../AGENTS.md): development workflow and conventions.

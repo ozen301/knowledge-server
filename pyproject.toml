@@ -10,12 +10,18 @@ readme = "README.md"
 requires-python = ">=3.14"
 license = { text = "MIT" }
 dependencies = [
+    "cryptography>=50,<51",
+    "httpx2>=2.13,<3",
     "mcp>=2.2,<3",
     "pydantic>=2,<3",
+    "PyJWT[crypto]>=2.15,<3",
+    "starlette>=1.7,<2",
+    "uvicorn>=0.54,<1",
 ]
 
 [project.scripts]
 knowledge-server = "knowledge_server.__main__:main"
+knowledge-server-http = "knowledge_server.adapter.http_main:main"
 
 [dependency-groups]
 dev = [

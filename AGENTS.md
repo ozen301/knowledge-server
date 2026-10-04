@@ -31,6 +31,13 @@ a task is worth the handoff cost; the skill states the limits.
 - Test with small collections of invented notes. Automated tests must run
   without the real vault, external accounts, network services, or a local
   `.env`.
+- HTTP tests use invented signing keys and an injected key fetch. The
+  synthetic HTTP launcher accepts only an exact copy of
+  `tests/fixtures/vault/`, listed with SHA-256 digests in
+  `src/knowledge_server/adapter/synthetic-vault.json`. When fixture notes
+  change, update the manifest in the same change; the guard tests in
+  `tests/test_http.py` fail until it matches. The guard also rejects more than
+  100 entries or a file larger than 1 MiB.
 - Treat another agent's review as claims to verify against the repository and
   agreed requirements. Fix confirmed issues when fixes are within the
   authorized scope; otherwise report them. Explain rejected findings and name

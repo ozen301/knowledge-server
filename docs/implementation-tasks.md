@@ -86,41 +86,85 @@ tool use and citations.
 ## Task 7 — HTTP entry point and synthetic ChatGPT trial
 
 Depends on: Task 6a. The live trial also needs a Cloudflare-managed domain and
-the owner's login identity, provisioned by the vault owner or with their
+the vault owner's login identity, provisioned by the vault owner or with their
 authorization.
 
-Status: in progress. The route is decided; the HTTP implementation and the
-live trial have not started. The [implementation
-plan](implementation-plan.md#web-access-route) gives the reasons for the
-route. No tunnel or remote connection has been verified. An earlier local
-readiness check passed all 105 adapter and retrieval-evaluation tests; they
-use invented notes and show nothing about remote access.
+Goal: build the minimal HTTP entry point that later tasks keep, with all its
+protections and offline tests, and use it for a synthetic trial with a
+personal ChatGPT Plus account.
 
-Build the minimal HTTP entry point that later tasks keep, with its
-protections and offline tests from the start; then use it for a synthetic
-trial with a personal ChatGPT Plus account. Do not leave assertion signature
-checks, fail-closed owner authorization, bounded key fetching and refresh, or
-safe logs for Task 8. Work in this order:
+Status: local implementation and validation complete; provisioning and the
+live trial are pending. These modules in `src/knowledge_server/adapter/`
+exist, with their tests in `tests/test_http.py`:
 
-1. **Spec.** Choose and justify the JWT library. Check the installed SDK's
-   Streamable HTTP API, including stateless mode, JSON responses, and host
-   protection. Record the entry point's configuration in the web access plan.
-2. **Tests.** Write the offline tests listed below before the code.
-3. **Implementation.** Build the entry point and all its protections as the
-   [web access plan](web-access.md#origin-http-entry-point) describes.
-4. **Validation.** Run `scripts/check` and review the diff. Do not expose the
-   service until both pass.
+- `http_main.py`: the `knowledge-server-http` launcher.
+- `http_config.py`: the explicit synthetic configuration.
+- `synthetic.py` and `synthetic-vault.json`: the trial directory check and
+  its manifest.
+- `http.py`: the request gate.
+- `http_auth.py`: assertion validation and bounded key retrieval.
+- `http_logging.py`: the restricted log handler.
+
+The [architecture overview](architecture.md#protected-http-entry-point)
+describes the components, the [HTTP
+contract](web-access.md#local-http-implementation-contract) defines the
+configuration and bounds, and the [usage
+guide](usage.md#prepare-the-synthetic-http-trial) gives the launch procedure.
+No real-vault launcher and no owner-identity bootstrap procedure exist yet.
+
+Local evidence, 2026-10-04: `scripts/check` passed the formatting, lint,
+type, and whitespace checks and all 479 tests, 98 of them for HTTP. Besides
+the offline acceptance criteria below, the HTTP tests run the real launcher
+on loopback: it rejects unauthenticated probes, stops cleanly on SIGINT and
+SIGTERM, and reports a busy port or a failing lifespan with only a fixed
+category. Offline initialization negotiated protocol version `2025-11-25`;
+this does not establish the version ChatGPT negotiates.
+
+A code review's confirmed findings were fixed and the fixes re-reviewed with
+no finding left open. The launcher now requires lifespan support, a fresh
+known key no longer waits behind a refresh, and unsuitable public entries in
+a key set are skipped while the set-wide checks remain. The cache and
+lifespan regression tests failed before their fixes. In-memory mutations
+showed that the authorized end-to-end test detects missing lifespan
+forwarding and missing Host normalization.
+
+No public tunnel or remote connection has been verified. Only the live trial
+can show:
+
+- whether ChatGPT's Managed OAuth assertions carry `type: "app"`, the pinned
+  `sub`, and no `common_name`;
+- whether Cloudflare's live key set fits 64 KiB and 16 entries, contains a
+  usable RS256 key with a `kid`, and how rotation appears there;
+- whether cloudflared preserves the public Host header, and whether ChatGPT
+  sends no `Origin` header or only an approved one;
+- whether ChatGPT works with stateless JSON responses, and which protocol
+  version it negotiates;
+- how Cloudflare caches the 400 and 500 responses that Uvicorn generates
+  itself.
+
+The vault owner reports that the Cloudflare-managed domain, dedicated MCP
+hostname, Zero Trust organization, and tested Cloudflare identity provider
+with account-member restriction are ready. The Access application, Managed
+OAuth, tunnel, connector, application audience, and privately verified owner
+identifier remain to be configured.
+
+Steps 1–4 (spec, tests, implementation, and validation) are complete. Do the
+remaining steps in this order:
+
 5. **Provisioning.** With the vault owner's authorization, set up the domain,
    the Access application, the tunnel, and cloudflared on the Ubuntu VM,
    routing to the loopback origin.
-6. **Owner identity.** Establish and pin the owner identifier as the [web
-   access plan](web-access.md#owner-identity) describes. No tools are enabled
-   until then.
-7. **Live trial.** Run the live probes below with `tests/fixtures/vault/`.
+6. **Owner identity.** Define the private procedure, then establish and pin
+   the owner identifier as the [web access
+   plan](web-access.md#owner-identity) describes. No tools are enabled until
+   then.
+7. **Live trial.** Start the launcher as the [usage
+   guide](usage.md#prepare-the-synthetic-http-trial) describes, with a copy
+   of `tests/fixtures/vault/`, and run the live probes below.
 8. **Drift prevention.** Record sanitized results in this entry, and update
    the architecture overview, usage guide, and README for what exists.
 
-Acceptance, offline (automated, synthetic keys, no network):
+Acceptance, offline (complete; synthetic keys, no external network services):
 
 - The origin rejects a request without dispatching it to MCP when the
   assertion is missing or malformed, has a forged signature, uses an
@@ -143,8 +187,11 @@ Acceptance, offline (automated, synthetic keys, no network):
 - An invalid Host or an unapproved Origin is rejected; a request without
   Origin is accepted.
 - Over HTTP, the four tools have semantically equal schemas and annotations
-  and return the same results as over stdio. Responses carry
-  `Cache-Control: no-store`. The stdio tests still pass.
+  and return the same results as over stdio. Every HTTP response produced by
+  the ASGI application carries `Cache-Control: no-store`; Uvicorn's own
+  protocol-level 400 and fallback 500 responses are [outside this
+  guarantee](web-access.md#listener-and-request-gate). The stdio tests still
+  pass.
 - Sentinel tests show that tokens, claims, headers, queries, and note text do
   not reach the logs.
 - `scripts/check` passes.

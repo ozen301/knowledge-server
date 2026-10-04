@@ -1,14 +1,23 @@
-# Cross-family agents
+# Models and cross-family commands
 
 This file is the only place in the skill that names model identifiers. They
 were checked on 2026-09-30. If a tool rejects one, tell the user and choose
 again.
 
-| Role | Claude family | OpenAI (Codex) family |
+The table gives model options for different task demands. Choose a model
+and supported effort for each assignment as the skill's [Models and
+effort](../SKILL.md#models-and-effort) section describes; the agent's role
+determines neither.
+
+| Tier | Claude family | OpenAI (Codex) family |
 |---|---|---|
-| Investigator | `claude-haiku-4-5-20251001`; `claude-sonnet-5-5` when judgment is needed | `gpt-6-luna` |
-| Writer | `claude-sonnet-5-5` | `gpt-6.1-sol`; `gpt-6-luna` for mechanical edits |
-| Reviewer | `claude-opus-5-5` | `gpt-6.1-sol`; `gpt-6-astra` when the stakes justify its cost; `gpt-6-luna` for a narrow check |
+| Light | `claude-haiku-4-5-20251001` | `gpt-6-luna` |
+| Standard | `claude-sonnet-5-5` | `gpt-6.1-sol` |
+| Strongest | `claude-opus-5-5` | `gpt-6-astra` |
+
+The commands below set effort with `--effort <level>` (Claude Code) or
+`-c model_reasoning_effort=<level>` (Codex). Use a level the chosen model
+supports.
 
 Every command below has a deadline. Exit status 124 or 137 means the deadline
 expired, and any other nonzero status means the run failed. Report both as

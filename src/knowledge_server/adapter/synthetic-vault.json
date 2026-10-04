@@ -1,0 +1,13 @@
+{
+  "computer-vision/ego4d.md": "af2b84ca2068e7b19fec98550eca92785bb583fdfc01045ce0b9bf58a5747c8c",
+  "computer-vision/object-detection-metrics.md": "7610d9a9c1a0401b8adc388974dd31532cd234d951aea019f4d93d905158fb45",
+  "computer-vision/一人称視点映像.md": "91915d467314ec8ee5509c27db910859dfd6dba05648ffd62c4f69a46285fb99",
+  "computer-vision/物体状態変化.md": "d25715394507ff889bb12b8a4793d02d38d2bc2fd95f0b93337372fb6db24bec",
+  "infrastructure/nas-configuration.md": "bad84afcaf7ad3935d9e8c68d238dafc52bc19f14b69dfabf32cc58d6d7222eb",
+  "infrastructure/ubuntu-development-environment.md": "1d4500065846a0383584090bb9fbd6baaaf2f8b8316093205130671e9d700b6b",
+  "knowledge-system/model-context-protocol.md": "2e7849e67abdb8a3c4384271e813c2b0ac6a69963ea842776133acc3e4c0789c",
+  "knowledge-system/semantic-search.md": "b2bb68e2e290cf207f13611a1df35eadd73488f3b0cb1f6b65a24717782c3d06",
+  "llm/VLMメモ.md": "c9eab1628ce8443dfce56f16ef7687ca5c69ec62183d288d0c286139f9cddf6f",
+  "llm/local-llm-quantization.md": "11da8b03d9afefb6aadd4388e89ac7a2971ac32df0d60f0de4d8a03386d55004",
+  "tools/git-comparing-local-changes.md": "be490fadd1c304a6d0b8dbc8bacc8450e69bcf6d7c04f08c69e302b27c29ded7"
+}

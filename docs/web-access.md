@@ -1,9 +1,13 @@
 # Web access plan
 
-Status: agreed design, decided 2026-10-02. **Not implemented**; the server
-currently runs only over stdio. The [implementation
+Status: agreed design, decided 2026-10-02; local HTTP contract updated
+2026-10-04. The protected loopback HTTP entry point and its synthetic-only
+launcher are implemented beside stdio. Cloudflare provisioning is incomplete
+and the live ChatGPT trial has not run, so the public route and ChatGPT
+compatibility are unverified. The [implementation
 plan](implementation-plan.md#web-access-route) explains why this route was
-chosen, and [Tasks 7–9](implementation-tasks.md) implement it.
+chosen, and [Tasks 7–9](implementation-tasks.md) implement it and track
+progress.
 
 ## Route
 
@@ -49,7 +53,7 @@ The application's [log policy](#logging) covers only this application's logs,
 not Cloudflare's or OpenAI's.
 
 Managed OAuth is a Beta feature, and compatibility between ChatGPT, Managed
-OAuth, and the SDK's HTTP transport is unproven until the Task 7 trial.
+OAuth, and the SDK's HTTP transport is unproven until the Task 7 live trial.
 Task 9 in the [implementation tasks](implementation-tasks.md) rechecks these
 dependencies and the chosen client account's data handling before the vault
 owner explicitly authorizes the real vault scope. That
@@ -95,29 +99,26 @@ the discovery metadata, so discovery stays reachable without login.
 ## Origin HTTP entry point
 
 The entry point sits in the adapter layer beside the stdio entry point; the
-core and stdio stay unchanged. It uses the SDK's Streamable HTTP transport,
-preferably in stateless mode with JSON responses. The installed `mcp` 2.2.0
-supports both, but whether ChatGPT works with them is unverified, so record
-the negotiated protocol version. It serves the same four tools under the
-[Phase 1 contract](phase-1-contract.md), with schemas and read-only
-annotations semantically equal to the stdio server's. It adds no `search` or
-`fetch` wrapper tools; OpenAI's [developer-mode
+core and stdio stay unchanged. It serves the same four tools under the
+[Phase 1 contract](phase-1-contract.md) over the SDK's Streamable HTTP
+transport, in stateless mode with JSON responses. Their schemas and read-only
+annotations are semantically equal to the stdio server's. It adds no `search`
+or `fetch` wrapper tools; OpenAI's [developer-mode
 guide](https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt)
-does not require them.
+does not require them. The installed `mcp` 2.2.0 supports this mode, but
+whether ChatGPT works with it is unverified, so the live trial records the
+negotiated protocol version.
 
-Leave the SDK's OAuth authentication settings unconfigured. Its bearer
+The SDK's OAuth authentication settings stay unconfigured. Its bearer
 authentication reads the `Authorization` header, which here carries
 Cloudflare's opaque token, and its settings can publish OAuth metadata that
-competes with the metadata Access serves. Instead, middleware around the
-whole ASGI application checks every request before MCP handling: the
-[assertion validation](#assertion-validation) below, a `Host` header that
-names the forwarded public hostname or a loopback name, and an `Origin`
-header that is approved if present. A request without `Origin` is accepted.
-
-The synthetic trial uses an explicit synthetic-only launch configuration and
-guard, outside the core. It must not take its root from the ambient
-environment, and the generic server must not hard-code a fixture path. Only
-explicit Task 9 configuration activates and mounts the real vault scope.
+competes with the metadata Access serves. Instead, a gate around the whole
+ASGI application checks every request before MCP handling: the [assertion
+validation](#assertion-validation) below, a `Host` header that names the
+forwarded public hostname or a loopback name, and an `Origin` header that is
+approved if present. A request without `Origin` is accepted. The [local
+implementation contract](#local-http-implementation-contract) gives the exact
+rules.
 
 ## Assertion validation
 
@@ -141,46 +142,200 @@ guide](https://developers.cloudflare.com/cloudflare-one/access-controls/applicat
    audience must equal it; an array audience must include it.
 6. The expiry claim is present and the assertion is not expired; time-based
    claims are checked with an explicit, bounded clock skew.
-7. The identity equals the pinned owner identifier. A missing or unexpected
-   identity and any service credential are rejected. Whether the email claim
-   must also match depends on the verified meaning of the claims; do not add
-   it by default.
+7. The `sub` claim equals the pinned [owner identifier](#owner-identity). A
+   missing or different identity and any service credential are rejected.
+   The email claim is not checked separately.
 
 The opaque `Authorization` token and unsigned identity headers never
-authenticate a request. Use a maintained JWT library, chosen and justified
-under the repository's dependency rule before code is written, and no custom
-cryptography or OAuth server. Automated tests inject synthetic keys and need
-no network. Record the reasons for the chosen timeouts, skew, cache, and
-refresh bounds.
+authenticate a request. Verification uses PyJWT, a maintained JWT library;
+the project adds no custom cryptography or OAuth server. Automated tests
+inject synthetic keys and need no network. The [assertion and key
+rules](#assertion-and-key-rules) give the exact limits and their reasons.
 
 ## Owner identity
 
-The pinned owner identifier must come from verified assertions, not from claim
-names alone. Establish it before tool dispatch is enabled, through the
-provider's identity administration or a one-off local bootstrap procedure,
-not through a server debug mode or a shipped inspection feature. An assertion
-inspected this way must first pass the signature, issuer, audience, and
-expiry checks, and tool authorization stays deny-all meanwhile. Then confirm
-that assertions from ChatGPT's Managed OAuth flow carry the pinned
-identifier.
+The pinned owner identifier is the assertion's `sub` claim. Cloudflare's
+[application-token
+documentation](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/application-token/)
+defines `sub` as the user identifier within the account, and [Managed
+OAuth](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/)
+documents the signed origin assertion for its user identity. Removing and
+re-adding the user in Cloudflare can change `sub`; the new value must then be
+verified privately and pinned again.
+
+The identifier must come from verified assertions, not from claim names
+alone. Establish it before tool dispatch is enabled, through the provider's
+identity administration or a one-off local bootstrap procedure, not through a
+server debug mode or a shipped inspection feature. An assertion inspected this
+way must first pass the signature, issuer, audience, and expiry checks, and
+tool authorization stays deny-all meanwhile. Then confirm that assertions from
+ChatGPT's Managed OAuth flow carry the pinned identifier.
 
 Diagnostics show only claim names and types. Raw tokens and claims are never
 printed, logged, persisted, given to agents, or committed. Only the verified
 owner identifier itself may be stored, by the procedure or the vault owner,
 directly in private runtime configuration outside Git.
 
+No such procedure exists yet. Provisioning must define it privately, together
+with the private launch configuration. The HTTP server has no debug,
+bootstrap, or claim-inspection mode. The launcher refuses to start without an
+owner identifier, and there is no anonymous or accept-any-identity mode, so no
+tool is reachable before the identifier is pinned.
+
 If the provider's mechanisms cannot establish the identifier safely,
 provisioning stops; if no suitable stable identity binding exists, the
-authentication architecture is reconsidered. The HTTP entry point refuses to
-start without a configured owner identifier, and there is no anonymous or
-accept-any-identity mode.
+authentication architecture is reconsidered.
 
-## Logging
+## Local HTTP implementation contract
 
-Logs record only the method or tool name, a status or error category, and
-latency. They omit tokens, raw headers, claims, identity values or hashes, IP
-addresses, tool arguments including queries, results, and note content.
-Sentinel tests check that secrets and content do not reach the logs.
+The Task 7 implementation follows this contract, and `tests/test_http.py`
+checks it offline. The [usage
+guide](usage.md#prepare-the-synthetic-http-trial) gives the launch procedure.
+
+### Launch configuration
+
+`knowledge-server-http --config /absolute/private/trial.toml` reads one
+explicit TOML file, given by absolute path, of at most 16 KiB. It ignores
+`KNOWLEDGE_ROOT`, proxy environment variables, and `.env` files.
+
+| Field | Default | Rule |
+|---|---|---|
+| `mode` | required | Must be `"synthetic"`; no other mode exists. |
+| `root` | required | Absolute path to an existing readable directory: the dedicated trial directory. |
+| `team_domain` | required | `<team>.cloudflareaccess.com`, in lowercase, without a scheme. |
+| `audience` | required | The Access application's AUD tag. |
+| `owner_subject` | required | The privately verified owner `sub` value. |
+| `public_host` | required | The public MCP hostname, in lowercase, with at least one dot and at most 253 characters, without a scheme or port. |
+| `port` | `8000` | The loopback listener port, 1–65535. |
+| `allowed_origins` | `[]` | Exact `Origin` values: `http` or `https`, a host, and an optional port; no path (not even `/`), query, fragment, credentials, or wildcard. |
+
+`root` follows the [same rules as
+`KNOWLEDGE_ROOT`](phase-1-contract.md#configuration-and-common-policy). The
+values of `team_domain`, `audience`, `owner_subject`, and `public_host`, and
+each entry in `allowed_origins`, must be 1–1024 characters long, must not
+start or end with whitespace, and must not contain spaces, ASCII control
+characters, or DEL. An unknown field or a missing or invalid value stops
+startup with a fixed diagnostic.
+
+### Synthetic trial guard
+
+Before serving, the launcher compares the root with
+`src/knowledge_server/adapter/synthetic-vault.json`, a packaged manifest that
+lists every invented note in `tests/fixtures/vault/` with its SHA-256 digest.
+Startup fails on a changed, missing, or extra file, a symlink, a special
+file, an entry that cannot be read, more than 100 entries, or a file larger
+than 1 MiB.
+
+The guard checks the contents at startup only, and the tools read the live
+directory afterwards. Keep the trial directory dedicated to the invented
+notes for as long as it is in use.
+
+The generic HTTP application receives an explicit path policy and knows no
+fixture location or environment root. There is no real-vault launcher. Task 9
+needs a separately specified launch path, and only its explicit configuration
+may activate the real vault scope.
+
+### Listener and request gate
+
+Uvicorn listens only on `127.0.0.1` at the configured port, with proxy-header
+interpretation, access logs, and the `Server` header disabled. Lifespan
+handling is required: the gate forwards lifespan events to the SDK, and a
+lifespan startup that fails or raises stops the launcher.
+
+The MCP endpoint is `/mcp`, created with the installed MCP 2.2.0 API
+`streamable_http_app(json_response=True, stateless_http=True)`. The gate,
+`HTTPApplication`, checks every HTTP request on every path and method in this
+order. Nothing reaches the SDK until all checks pass.
+
+1. Exactly one `Host` header whose value, compared case-insensitively, is
+   `public_host`, `public_host:443`, `127.0.0.1`, `localhost`,
+   `127.0.0.1:<port>`, or `localhost:<port>`. Otherwise: 421.
+2. No `Origin` header, or exactly one whose value exactly matches an entry in
+   `allowed_origins`. An empty value is rejected. Otherwise: 403.
+3. Exactly one `Cf-Access-Jwt-Assertion` header that passes [assertion
+   validation](#assertion-validation). Otherwise: 401.
+
+Only a request that passes the Host and Origin checks and has exactly one
+assertion header can cause a key fetch. The gate passes Host to the SDK in
+lowercase, and the same Host and Origin lists configure the SDK's own
+transport-security checks. Non-HTTP connections, such as WebSocket, are
+closed. Rejection and error bodies are fixed text. After authorization,
+unknown paths, including OAuth discovery paths, return 404; discovery stays
+at the edge.
+
+Every HTTP response that the ASGI application produces, including
+rejections, errors, and 404s, carries `Cache-Control: no-store`, which
+replaces any other `Cache-Control` value. Uvicorn's own protocol-level 400
+responses and fallback 500 responses are outside this guarantee; their
+bodies contain fixed text, not tool data.
+
+### Assertion and key rules
+
+`PyJWT[crypto]` verifies RS256 signatures and parses JWKs. It was already
+locked as an SDK dependency and is declared directly because the application
+uses it. HTTPX2 (key fetching), Starlette (ASGI types and responses), Uvicorn
+(the listener), and Cryptography (RSA key checks) were also already locked
+and are declared directly for the same reason. Check library APIs against
+the installed versions and [PyJWT's API
+documentation](https://pyjwt.readthedocs.io/en/stable/api.html).
+
+The assertion must contain `iss`, `aud`, `exp`, `sub`, and `type`, with
+`type = "app"`, `sub` exactly equal to `owner_subject`, and no `common_name`
+claim, which marks a service credential. The time claims `exp`, `nbf`, and
+`iat`, when present, must be integer Unix timestamps; booleans are rejected.
+PyJWT verifies the signature, issuer, audience, expiry, not-before, and
+issued-at with 30 seconds of clock skew: enough for modest clock differences
+while keeping the expiry grace bounded. Only RS256 is accepted, with a `kid`
+of 1–256 characters and an RSA key of 2048–8192 bits. Assertions longer than
+16 KiB or containing non-ASCII characters are rejected before parsing.
+
+Signing keys are retrieved within these bounds:
+
+- **Source.** The issuer is `https://<team_domain>`, and the only trusted key
+  URL is `<issuer>/cdn-cgi/access/certs`. Fetches follow no redirects and
+  ignore proxy environment variables. Token `jku`, `x5u`, and `jwk` fields are
+  never trusted.
+- **Fetch limits.** Each fetch, including an injected one, has a five-second
+  total deadline. A response may have at most 64 KiB, and a key set 1–16
+  entries. These limits fit a small rotating key set without allowing
+  unbounded network work.
+- **Cache.** Keys from a successful refresh stay fresh for one hour, much
+  shorter than Cloudflare's documented rotation period. Each successful
+  refresh replaces the whole set.
+- **Refresh.** Refreshes are serialized, and at most one fetch attempt starts
+  every 30 seconds, failures included, to bound attacker-driven unknown-key
+  requests. A cold cache, an expired cache, or an unknown `kid` can request a
+  refresh within this bound. Unknown keys and expired caches fail closed; a
+  failed refresh keeps other still-fresh keys. A request for a fresh known key
+  does not wait for an in-flight refresh.
+- **Key-set validation.** A refresh fails and keeps the current keys if any
+  entry is not an object, contains private key material, or repeats another
+  entry's string `kid`; if an eligible RSA entry cannot be parsed or is
+  outside the size bounds; or if no usable key remains. These checks cover
+  every entry. Other public entries are skipped: those without a string `kid`
+  of 1–256 characters, and keys that are not RSA signing keys for RS256.
+
+Tests inject the fetch function and the monotonic clock, and never use live
+keys or network services.
+
+### Logging
+
+The HTTP process writes only two kinds of lines to stderr: a fixed startup
+category, and one line per request.
+
+```text
+knowledge-server-http startup category=<category>
+knowledge-server-http request method=<method> status=<status> latency_ms=<milliseconds>
+```
+
+Methods outside the standard HTTP set are recorded as `OTHER`. One filtered
+handler replaces the process's log handlers and drops every other record,
+including SDK, HTTPX2, Uvicorn, and tool adapter diagnostics, exception text,
+and tracebacks. Uvicorn access logs are disabled. Logs therefore omit tokens,
+raw headers, claims, identity values or hashes, IP addresses, paths, query
+strings, request bodies, tool arguments including queries, results, and note
+content. Stdio keeps its own logging setup. Sentinel tests check these
+restrictions.
 
 ## Shutdown and revocation
 
@@ -225,5 +380,7 @@ MCP portals or server aggregation; and NAS redesign.
 
 ## Provider documentation
 
-The provider statements above were checked against the linked pages on
-2026-10-02. Live compatibility is unproven. Recheck the pages before Task 9.
+Provider statements were checked against the linked pages on 2026-10-02.
+The application-token, Managed OAuth, and JWT API documentation was rechecked
+for local implementation on 2026-10-04. Live compatibility is unproven.
+Recheck the pages before Task 9.

@@ -1,14 +1,16 @@
 # Usage
 
-This guide explains how to connect knowledge-server to a local MCP host and
-what the server can return. The [README](../README.md#quick-start) has the
-short version. The [Phase 1 contract](phase-1-contract.md) defines the exact
-tool behavior.
+This guide explains how to connect knowledge-server to a local MCP host, how
+to prepare the synthetic HTTP trial, and what the server can return. The
+[README](../README.md#quick-start) has the short version. The [Phase 1
+contract](phase-1-contract.md) defines the exact tool behavior.
 
-The MCP host starts the server as a subprocess and talks to it over stdin and
-stdout. You do not start the server yourself. This local connection is the
-only one the server supports. Remote access for ChatGPT is planned in the
-[web access plan](web-access.md) but not implemented.
+For stdio, the MCP host starts the server as a subprocess and talks to it
+over stdin and stdout; you do not start it yourself. The separate HTTP
+launcher, which you start yourself, runs a protected loopback service for a
+trial with invented notes. The Cloudflare route and the ChatGPT connection
+still need provisioning and a live trial, as the [web access
+plan](web-access.md) describes.
 
 ## Requirements
 
@@ -100,13 +102,107 @@ If the host cannot find `uv`, use its absolute path as the command. If the
 server reports that `rg` is missing, add a `PATH` value that contains `rg` to
 the server's environment.
 
+## Prepare the synthetic HTTP trial
+
+`knowledge-server-http` serves the same four tools at `/mcp` on IPv4
+loopback, for a trial with the invented sample notes only. Every request
+needs a valid signed Cloudflare assertion for the pinned owner subject; the
+opaque OAuth access token alone is not enough. The public route and ChatGPT
+compatibility are not yet verified. The [HTTP
+contract](web-access.md#local-http-implementation-contract) defines the exact
+settings and checks.
+
+1. Copy the sample notes to a new, dedicated directory:
+
+   ```sh
+   cp -R /path/to/knowledge-server/tests/fixtures/vault \
+     /absolute/path/to/invented-notes
+   ```
+
+   Keep only these invented notes in the directory for as long as you use
+   it. At startup, the launcher compares the directory with a packaged
+   SHA-256 manifest and rejects changed, missing, or extra files, symlinks,
+   and special files. It does not detect later changes, and the tools read
+   the directory as it is at each request.
+2. During authorized provisioning, obtain the Access application's AUD tag
+   and privately establish the owner subject as the [owner identity
+   procedure](web-access.md#owner-identity) requires. That
+   procedure is not yet written. Do not paste assertions, claims, or
+   credentials into chat. The launcher does not start without an owner
+   subject, so no tool can be used before it is pinned.
+3. Save this TOML in a private file outside the repository. Set `root` to
+   the directory from step 1. Replace `team_domain` and `public_host` with
+   your Cloudflare team domain and MCP hostname, and replace the audience
+   and owner placeholders with the values from step 2. Restrict the file to
+   your account, for example with `chmod 600 /absolute/private/trial.toml`.
+
+   ```toml
+   mode = "synthetic"
+   root = "/absolute/path/to/invented-notes"
+   team_domain = "example.cloudflareaccess.com"
+   audience = "<application-aud>"
+   owner_subject = "<verified-owner-sub>"
+   public_host = "mcp.example.com"
+   port = 8000
+   allowed_origins = []
+   ```
+
+   `allowed_origins` accepts exact values only. A request without `Origin`
+   is accepted; with this empty list, any request that sends `Origin` is
+   rejected. Add an origin only after verifying that the chosen client needs
+   it.
+4. From a revision whose local validation and diff review passed, start the
+   launcher:
+
+   ```sh
+   uv run --project /path/to/knowledge-server --locked \
+     knowledge-server-http --config /absolute/private/trial.toml
+   ```
+
+   Expected result: the process keeps running and listens only on
+   `127.0.0.1:8000`. It does not interpret proxy headers, never treats
+   unsigned identity headers as authentication, and ignores `KNOWLEDGE_ROOT`
+   and `.env`. Stderr receives one line per request with only the method,
+   status, and latency.
+
+   If startup fails, the process exits with status `1` and writes one line,
+   `knowledge-server-http startup category=<category>`, to stderr:
+
+   | Category | Cause |
+   |---|---|
+   | `configuration` | `--config` is missing; the file is unreadable, larger than 16 KiB, or invalid; or the directory fails the manifest check. |
+   | `missing-ripgrep` | `rg` is not on `PATH`. |
+   | `runtime` | The server could not start, for example because the port is in use, or it failed unexpectedly. |
+
+5. From another terminal, check that the gate rejects a request without an
+   assertion:
+
+   ```sh
+   curl -si http://127.0.0.1:8000/mcp
+   ```
+
+   If you set another `port`, use it instead of `8000`. Expected result:
+   status 401 with the header `cache-control: no-store`. A request with an
+   unlisted Host receives 421, and one with an unapproved Origin receives 403.
+6. To stop the process, press Ctrl-C. It shuts down and exits with status
+   `0`. After SIGTERM, it also shuts down gracefully, and then ends by that
+   signal, which a shell reports as status `143`.
+
+Configure Access, Managed OAuth, Tunnel, and cloudflared only in the
+authorized provisioning step, and keep the public route disabled until the
+owner subject is established. The Cloudflare edge serves OAuth discovery; the
+origin implements no OAuth discovery or registration. The launcher has no
+real-vault mode; Tasks 8–9 prepare and authorize that deployment.
+
 ## What the server reads
 
 - **The live working tree.** The server reads the files in the local vault
   checkout as they are now, including uncommitted and untracked notes. An
   edit is visible in the next tool call without a restart. The server does
   not search Git history or cache content. `KNOWLEDGE_ROOT` is resolved once
-  at startup, so restart the host after moving the vault.
+  at startup, so restart the host after moving the vault. The HTTP launcher
+  instead reads its root from its private configuration file at startup;
+  keep that directory dedicated to the invented notes.
 - **No Git operations.** The server never writes files and never runs Git.
   You synchronize the local vault checkout with Git yourself. Results during a
   pull or checkout can mix old and new files; repeat the question afterwards.
@@ -139,7 +235,10 @@ send to that provider. The provider's terms and your account settings decide
 how long it keeps them. The hosts also save session transcripts locally:
 Claude Code under `~/.claude/projects/` and Codex under `~/.codex/sessions/`.
 The server itself writes only short diagnostic messages to stderr, never note
-contents or queries.
+contents or queries. In the planned web route, Cloudflare also handles
+decrypted requests and responses, and ChatGPT sends tool results to OpenAI.
+See the [web trust boundary](web-access.md#trust-boundary-and-data-handling)
+before provisioning or considering real-vault use.
 
 ## Use the core from Python
 

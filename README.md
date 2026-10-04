@@ -9,10 +9,16 @@ local Git checkout of the notes without modifying them.
 The project is under development. The `knowledge-server` command serves four
 read-only MCP tools over stdio to a local MCP host: `knowledge_search`,
 `knowledge_read`, `knowledge_list`, and `knowledge_info`. It has been checked
-with Claude Code and Codex CLI. Web access for ChatGPT, through Cloudflare
-Access and Cloudflare Tunnel, is planned in the [web access
-plan](docs/web-access.md) but not implemented. The [implementation
-tasks](docs/implementation-tasks.md) track progress.
+with Claude Code and Codex CLI.
+
+`knowledge-server-http` serves the same tools over HTTP on loopback, for a
+trial with the invented sample notes only. It accepts only requests that
+carry a valid Cloudflare Access assertion for the pinned vault owner. The
+Cloudflare Access and Tunnel route is not yet provisioned, and ChatGPT
+compatibility is unverified. The [usage
+guide](docs/usage.md#prepare-the-synthetic-http-trial) describes the
+launcher, and the [implementation tasks](docs/implementation-tasks.md) track
+progress.
 
 ## Quick start
 
@@ -80,15 +86,15 @@ GitHub Actions runs `scripts/check --ci` automatically only on pushes to
   checkout, and project roles.
 - [Architecture overview](docs/architecture.md): what the components do and
   how they work together.
-- [Usage guide](docs/usage.md): host registration, behavior, limits, and
-  data disclosure.
+- [Usage guide](docs/usage.md): host registration, the synthetic HTTP trial,
+  behavior, limits, and data disclosure.
 - [Repository guide](AGENTS.md): development workflow and writing conventions.
 - [Implementation plan](docs/implementation-plan.md): architecture, decisions,
   and milestones.
 - [Phase 1 contract](docs/phase-1-contract.md): agreed tool behavior and
   boundaries.
-- [Web access plan](docs/web-access.md): the planned remote route for
-  ChatGPT, not yet implemented.
+- [Web access plan](docs/web-access.md): the HTTP security contract and remote
+  route for ChatGPT; live compatibility remains unverified.
 - [Implementation tasks](docs/implementation-tasks.md): ordered tasks,
   acceptance criteria, and progress.
 - [Retrieval evaluation](docs/retrieval-evaluation.md): fixed questions about

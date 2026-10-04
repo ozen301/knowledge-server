@@ -13,9 +13,10 @@ the final report.
 
 You may use this skill without being asked when delegation saves more than it
 costs: for example, independent read-only questions that can run in parallel,
-such as how an external tool behaves, or a bounded edit that a cheaper writer
-can make. Work directly when a handoff would take longer than the work. In the
-report, name the agents that ran and why.
+such as how an external tool behaves, or bounded work that a less costly model
+can do as well as you. Work directly when the handoff, writing the assignment
+and checking the result, would cost more than the work. In the report, name
+the agents that ran, with their model and effort, and why.
 
 Delegating on your own covers agents of your own model family only. Consult
 or review with the other family only when the user asks.
@@ -32,15 +33,22 @@ or review with the other family only when the user asks.
   coordinating agent: it does not edit while a delegated writer works.
 - **Reviewers** follow [references/review.md](references/review.md).
 
-## Models
+## Models and effort
 
-- An explicit user choice of model always applies. Never substitute an
-  unavailable model silently; tell the user and choose again.
-- Choose within your own family unless the user asks for the other one.
-  Prefer a writer that costs less than you and can do the task; you may also
-  implement directly.
-- For models and commands of the other family, see
-  [references/cross-family.md](references/cross-family.md).
+Choose the least costly model and supported effort expected to meet each
+task's quality bar on the first attempt, weighing complexity, uncertainty,
+risk, latency, and handoff cost. Set both explicitly for every delegation;
+neither the agent's role nor your own settings is a default.
+
+Honor explicit user choices of model and effort, and use the other family
+only when the user asks. Never substitute silently; tell the user when a
+model or effort is unavailable. Tools cannot switch your own model. If the
+chosen settings require an agent without this conversation's history, give
+it the requirements, agreed decisions, and authorization and data-sharing
+limits.
+
+See [references/cross-family.md](references/cross-family.md) for models and
+commands.
 
 ## Assignments and handoffs
 
@@ -51,8 +59,9 @@ outcome, evidence (file:line or API signatures), files changed, checks run,
 and open risks.
 
 Inspect each diff and claim yourself; passing checks alone do not make a
-handoff acceptable. If an agent is blocked, diagnose, take over, or reassign
-once instead of retrying without limit.
+handoff acceptable. If an agent is blocked or its result falls short,
+diagnose the cause, then take over or reassign once, with a clearer
+assignment or a stronger model or effort, instead of retrying without limit.
 
 ## Validation and review
 

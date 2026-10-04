@@ -15,7 +15,9 @@ contents, knowledge-vault notes, or private reference documents.
    (`AGENTS.md`, the specification, the task entry), and say "read-only;
    change nothing." Require one line per finding: `defect|improvement | claim
    | violated requirement or concrete failure scenario | file:line`.
-3. Run the reviewer with a command from [cross-family.md](cross-family.md).
+3. Run the reviewer with a command from [cross-family.md](cross-family.md),
+   with a model and effort chosen for the review's scope and risk, unless the
+   user chose them.
    Keep raw output outside the repository. A timeout, a nonzero exit status,
    or an empty or failed answer is a failed review; report it as such, never
    as "no findings."
