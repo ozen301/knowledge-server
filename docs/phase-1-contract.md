@@ -4,8 +4,7 @@ Status: agreed implementation contract, updated 2026-10-04. The
 [implementation tasks](implementation-tasks.md) track progress. Changes should
 update this document and the corresponding tests together. The protected
 [HTTP entry point](web-access.md#local-http-implementation-contract) serves
-these tools with the same behavior; public web access through it is not yet
-verified.
+these tools with the same behavior.
 
 ## Configuration and common policy
 

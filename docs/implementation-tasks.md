@@ -1,8 +1,8 @@
 # Implementation tasks
 
-Run these sequentially. Tasks 1–6a are complete; their entries below keep
-only what exists and what later tasks need. Tasks 7–9 implement the vault
-owner's next priority, web access for ChatGPT, as the [web access
+Run these sequentially. Tasks 1–7 are complete; their entries below keep
+what exists, validation evidence, and what later tasks need. Task 8 is next.
+Tasks 8–9 cover hardening and real-vault deployment, as the [web access
 plan](web-access.md) specifies. Define tasks for retrieval upgrades from the
 [retrieval evaluation](retrieval-evaluation.md) findings.
 
@@ -80,154 +80,102 @@ known weaknesses. `tests/test_retrieval_evaluation.py` repeats the reference
 queries and checks the answer lines. The evaluation led to numbered read lines
 (`numbered_content` in `knowledge_read`) and left the initial limits
 unchanged. NFC-equivalent matching is the most important deferred search
-feature. Task 7 can rerun the question set through the web client to check its
-tool use and citations.
+feature.
 
-## Task 7 — HTTP entry point and synthetic ChatGPT trial
+## Task 7 — HTTP entry point and synthetic ChatGPT trial (complete)
 
-Depends on: Task 6a. The live trial also needs a Cloudflare-managed domain and
-the vault owner's login identity, provisioned by the vault owner or with their
-authorization.
+Completed on 2026-10-05. The local implementation, offline validation,
+provisioning, and synthetic ChatGPT trial succeeded. The vault owner accepted
+the evidence limitations below for closure. Real-vault HTTP support is not
+implemented.
 
-Goal: build the minimal HTTP entry point that later tasks keep, with all its
-protections and offline tests, and use it for a synthetic trial with a
-personal ChatGPT Plus account.
-
-Status: local implementation and validation complete; provisioning and the
-live trial are pending. These modules in `src/knowledge_server/adapter/`
-exist, with their tests in `tests/test_http.py`:
-
-- `http_main.py`: the `knowledge-server-http` launcher.
-- `http_config.py`: the explicit synthetic configuration.
-- `synthetic.py` and `synthetic-vault.json`: the trial directory check and
-  its manifest.
-- `http.py`: the request gate.
-- `http_auth.py`: assertion validation and bounded key retrieval.
-- `http_logging.py`: the restricted log handler.
-
-The [architecture overview](architecture.md#protected-http-entry-point)
-describes the components, the [HTTP
-contract](web-access.md#local-http-implementation-contract) defines the
+The `knowledge-server-http` launcher and its configuration, synthetic guard,
+request gate, assertion verifier, key cache, and restricted logging are in
+`src/knowledge_server/adapter/http*.py`, `synthetic.py`, and
+`synthetic-vault.json`. The [architecture
+overview](architecture.md#protected-http-entry-point) describes them, the
+[HTTP contract](web-access.md#local-http-implementation-contract) defines
 configuration and bounds, and the [usage
 guide](usage.md#prepare-the-synthetic-http-trial) gives the launch procedure.
-No real-vault launcher and no owner-identity bootstrap procedure exist yet.
+The owner identity was established privately and pinned in private runtime
+configuration; the server has no bootstrap or claim-inspection mode.
 
-Local evidence, 2026-10-04: `scripts/check` passed the formatting, lint,
-type, and whitespace checks and all 479 tests, 98 of them for HTTP. Besides
-the offline acceptance criteria below, the HTTP tests run the real launcher
-on loopback: it rejects unauthenticated probes, stops cleanly on SIGINT and
-SIGTERM, and reports a busy port or a failing lifespan with only a fixed
-category. Offline initialization negotiated protocol version `2025-11-25`;
-this does not establish the version ChatGPT negotiates.
+Local evidence, 2026-10-04: `scripts/check` passed formatting, lint, type,
+and whitespace checks and all 479 tests, 98 of them for HTTP. The offline
+checks in `tests/test_http.py` use invented keys and injected key fetching.
+They cover assertion and owner rejection, Host and Origin checks, bounded
+key retrieval and rotation, synthetic-only startup, HTTP/stdio schema and
+result parity, `no-store` responses, and exclusion of sensitive log content.
+Real loopback subprocess checks cover unauthenticated denial, signal shutdown,
+bind failures, and failed lifespan startup. Offline initialization negotiated
+`2025-11-25`; this is not evidence of ChatGPT's negotiated version.
 
-A code review's confirmed findings were fixed and the fixes re-reviewed with
-no finding left open. The launcher now requires lifespan support, a fresh
-known key no longer waits behind a refresh, and unsuitable public entries in
-a key set are skipped while the set-wide checks remain. The cache and
-lifespan regression tests failed before their fixes. In-memory mutations
-showed that the authorized end-to-end test detects missing lifespan
-forwarding and missing Host normalization.
+### Live trial evidence, 2026-10-05
 
-No public tunnel or remote connection has been verified. Only the live trial
-can show:
+The vault owner's trial report and follow-up confirmations record these
+results; private deployment notes, identifiers, credentials, and logs stay
+outside this repository. The client was a personal ChatGPT Plus account. The
+origin ran on the Ubuntu VM at `127.0.0.1:8000`, serving a copy of
+`tests/fixtures/vault/` in synthetic mode, with cloudflared `2026.9.3`.
+Managed OAuth issued 15-minute access tokens (the default) with a 1-week
+grant session duration. The Cloudflare identity provider had account-member
+restriction enabled, the Access policy allowed only the vault owner, and the
+origin required a valid signed assertion for its pinned owner subject. The
+[OAuth settings](web-access.md#oauth-settings-validated-in-the-synthetic-trial)
+record the illustrative endpoint and discovery URLs, the advertised
+capabilities, and the redirect allowlist setting.
 
-- whether ChatGPT's Managed OAuth assertions carry `type: "app"`, the pinned
-  `sub`, and no `common_name`;
-- whether Cloudflare's live key set fits 64 KiB and 16 entries, contains a
-  usable RS256 key with a `kid`, and how rotation appears there;
-- whether cloudflared preserves the public Host header, and whether ChatGPT
-  sends no `Origin` header or only an approved one;
-- whether ChatGPT works with stateless JSON responses, and which protocol
-  version it negotiates;
-- how Cloudflare caches the 400 and 500 responses that Uvicorn generates
-  itself.
+| Check | Observed result |
+|---|---|
+| Unauthenticated request to `http://127.0.0.1:8000/mcp` | 401 with `Cache-Control: no-store`; the listener stayed on loopback |
+| Unauthenticated request to the public MCP endpoint | 401 with a `WWW-Authenticate` challenge naming the protected-resource metadata |
+| Discovery and connection | Discovery worked; DCR registration and vault-owner authorization succeeded |
+| Cited answer | Tool activity was visible; ChatGPT answered "AMD Ryzen 5 2600X", citing `infrastructure/nas-configuration.md`, line 7 |
+| Reconnect | Tool access continued after disconnect and reconnect |
+| Practical renewal | 20 minutes after the last successful call, with no use or reconnect, a fresh read in a new chat answered "ASRock B450M Pro4-F", citing line 6 of the same note |
+| Stop and restart the origin while cloudflared runs | Access stopped, then recovered after the restart |
+| Stop and restart cloudflared while the origin runs | Access stopped, then recovered after the restart |
 
-The vault owner reports that the Cloudflare-managed domain, dedicated MCP
-hostname, Zero Trust organization, and tested Cloudflare identity provider
-with account-member restriction are ready. The Access application, Managed
-OAuth, tunnel, connector, application audience, and privately verified owner
-identifier remain to be configured.
+Successful tool use through the implemented gate indicates compatibility with
+the live assertion, key set, and stateless JSON transport. Because
+`allowed_origins` was empty, it also indicates that requests reaching the
+origin carried no `Origin` header; it does not show which headers ChatGPT
+sent to Cloudflare. These are inferences from successful requests, not
+captured headers or inspected claims.
 
-Steps 1–4 (spec, tests, implementation, and validation) are complete. Do the
-remaining steps in this order:
+### Accepted evidence limitations
 
-5. **Provisioning.** With the vault owner's authorization, set up the domain,
-   the Access application, the tunnel, and cloudflared on the Ubuntu VM,
-   routing to the loopback origin.
-6. **Owner identity.** Define the private procedure, then establish and pin
-   the owner identifier as the [web access
-   plan](web-access.md#owner-identity) describes. No tools are enabled until
-   then.
-7. **Live trial.** Start the launcher as the [usage
-   guide](usage.md#prepare-the-synthetic-http-trial) describes, with a copy
-   of `tests/fixtures/vault/`, and run the live probes below.
-8. **Drift prevention.** Record sanitized results in this entry, and update
-   the architecture overview, usage guide, and README for what exists.
+The vault owner accepted Task 7 closure with these details unobserved. They
+are not passed checks:
 
-Acceptance, offline (complete; synthetic keys, no external network services):
+- The live negotiated MCP protocol version and a complete tool inventory
+  with schemas and annotations were not recorded. Tests cover offline
+  HTTP/stdio parity.
+- The activity summary could not be expanded, so the individual tool calls,
+  their order, and the use of all four tools were not visible.
+- No refresh-grant exchange was captured. Continued access beyond the token
+  lifetime supports renewal but does not show the exchange.
+- The Host value that cloudflared forwarded was not recorded. The gate
+  accepts both the public hostname and loopback names, so success does not
+  show which one arrived.
+- Live signing-key rotation and Cloudflare caching of Uvicorn-generated 400
+  and 500 responses were not observed.
+- The conditional second-identity denial test was not recorded. Tests cover
+  offline rejection of non-owner assertions.
 
-- The origin rejects a request without dispatching it to MCP when the
-  assertion is missing or malformed, has a forged signature, uses an
-  algorithm other than RS256, has no expiry claim, is expired or not yet
-  valid beyond the allowed skew, has the wrong issuer or audience (string or
-  array form), or has a missing identity, a non-owner identity, or a service
-  credential. It accepts a valid owner assertion, including one whose
-  audience array contains the AUD tag.
-- An opaque `Authorization` token alone and unsigned identity headers do not
-  authenticate a request.
-- With an injected key provider: trusted keys come only from the configured
-  source, and URLs or keys embedded in a token are not trusted. After a key
-  rotation, an assertion with a new key ID passes once a permitted refresh
-  finds the key. A key ID that stays unknown after refresh is rejected.
-  Refreshes stay within their bounds, and a fetch timeout or key-source
-  outage with no usable trusted key rejects the request.
-- The entry point does not start without a configured owner identifier. The
-  trial launch does not start without its explicit synthetic-only
-  configuration.
-- An invalid Host or an unapproved Origin is rejected; a request without
-  Origin is accepted.
-- Over HTTP, the four tools have semantically equal schemas and annotations
-  and return the same results as over stdio. Every HTTP response produced by
-  the ASGI application carries `Cache-Control: no-store`; Uvicorn's own
-  protocol-level 400 and fallback 500 responses are [outside this
-  guarantee](web-access.md#listener-and-request-gate). The stdio tests still
-  pass.
-- Sentinel tests show that tokens, claims, headers, queries, and note text do
-  not reach the logs.
-- `scripts/check` passes.
+### Handoff
 
-Acceptance, live synthetic trial with ChatGPT:
-
-- An unauthenticated request receives the public 401 challenge, and the
-  discovery metadata is reachable without login. Record the advertised
-  resource identifier and registration methods.
-- Registration uses a method that both sides support (CIMD, DCR, or a
-  predefined client), with any redirect URI copied exactly from ChatGPT's
-  server management page. Authorization uses PKCE `S256`, and discovery and
-  token requests use the same advertised resource value.
-- The owner signs in and the session initializes. Record the negotiated
-  protocol version. Assertions from this flow carry the pinned owner
-  identifier.
-- ChatGPT discovers the four tools with semantically equal schemas and
-  annotations.
-- Asked which CPU the NAS uses, ChatGPT searches, reads, and answers "AMD
-  Ryzen 5 2600X", citing `infrastructure/nas-configuration.md`, line 7.
-- Token refresh and reconnection work.
-- Stopping the origin, and separately stopping cloudflared, ends access;
-  restarting recovers it.
-- If a second identity is available, the edge denies it. If not, record the
-  missing live test; documentation is not a pass.
-- No live credential, claim, private configuration, or log is committed or
-  included in a review handoff.
-
-If requests are blocked, follow the [edge
-configuration](web-access.md#edge-configuration) rules. If a compatibility or
-identity limitation remains after debugging, record it; only then does the
-[WorkOS AuthKit contingency](web-access.md#contingency) apply.
+Task 8 addresses the Host, key-rotation, and cache items offline unless the
+vault owner authorizes a live synthetic route, and Task 9 step 1 repeats the
+live probes on the target runtime. The process stop/restart checks do not
+establish Cloudflare route shutdown or issued-token revocation; Task 9
+measures both before real-vault use. Running the full 19-question [retrieval
+evaluation](retrieval-evaluation.md) through ChatGPT remains an optional
+follow-up.
 
 ## Task 8 — Harden the remote runtime and package it for Unraid
 
-Depends on: Task 7.
+Depends on: Task 7 (complete). Status: not started.
 
 Harden the Task 7 entry point for permanent use, as the [web access
 plan](web-access.md#runtime-isolation) describes. Choose exact values during
@@ -235,13 +183,24 @@ implementation and record the reasons.
 
 - Add request, rate, and concurrency limits for remote requests.
 - Extend key-fetch and restart resilience beyond the Task 7 baseline, and add
-  startup and health diagnostics.
+  startup and health diagnostics. If live signing-key rotation cannot be
+  exercised, record it as unobserved.
+- Specify the Host header that the packaged cloudflared sends to the origin,
+  check that the origin configuration accepts it, and test this offline. The
+  gate returns 421 for any Host other than the configured public hostname or
+  a loopback name, and Task 7 did not record the forwarded value.
+- Review the edge cache configuration for Uvicorn's own 400 and 500
+  responses, which the application's `no-store` guarantee does not cover.
 - Keep configuration and secrets outside Git.
 - Package the server and cloudflared for Unraid: an isolated container network
   with no published origin port on the host, outbound access for cloudflared,
   a non-root process, and a read-only vault mount.
 - Choose a dedicated local vault checkout or a read-only materialized
   snapshot, and document an external synchronization procedure.
+
+Validate with invented notes and offline tests. This task needs no additional
+account and no live public route. Unless the vault owner authorizes a live
+synthetic route during this task, Task 9 step 1 makes the live observations.
 
 Acceptance:
 
@@ -251,6 +210,8 @@ Acceptance:
   published on the host. Restart and reconnection work without corrupting data
   or requiring a new index.
 - Limits and safe logging apply to remote requests.
+- The packaged configuration states the expected forwarded Host, offline
+  tests show that the gate accepts it, and the edge cache review is recorded.
 - Exact launch and deployment configuration, synthetic verification evidence,
   and rollback instructions are ready before the deployment approval for
   Task 9.
@@ -262,10 +223,33 @@ synthetic service where that authorization is still needed. Activating the
 real vault scope needs the separate authorization in step 5.
 
 Deploy the prepared service on Unraid with the synthetic vault, then work in
-this order:
+this order. Before step 6, separately specify, test, implement, and review the
+real-vault launch path and its startup conditions. Preserve the synthetic
+guard for synthetic mode; the current launcher cannot activate real notes.
 
-1. Recheck Managed OAuth's status and the provider documentation, and rerun
-   the critical live probes from Task 7 with the synthetic vault.
+1. Recheck Managed OAuth's status and the provider documentation. Then, with
+   the synthetic vault, repeat these live probes and record the results.
+   Capturing the refresh exchange and repeating the full retrieval
+   evaluation are not required.
+
+   - From inside the runtime network, because the host publishes no origin
+     port, an unauthenticated request to the origin returns 401 with
+     `Cache-Control: no-store`.
+   - An unauthenticated request to the public endpoint returns 401 with the
+     OAuth challenge.
+   - Discovery and the vault owner's OAuth connection succeed.
+   - A read returns a correctly cited answer.
+   - Tool access continues after a reconnect. After a period longer than the
+     access-token lifetime, with no use or reconnect, a fresh read in a new
+     chat succeeds.
+   - Stopping the origin or cloudflared, each while the other keeps running,
+     removes access, and restarting it restores access.
+   - The origin accepts the forwarded Host. Record whether the edge caches
+     Uvicorn-generated 400 or 500 responses.
+   - If another identity is available, it is refused. Otherwise, the live
+     denial stays unverified, as the [implementation
+     plan](implementation-plan.md#progressive-milestones) notes.
+
 2. Test shutdown from Cloudflare as the [web access
    plan](web-access.md#shutdown-and-revocation) describes: disable the
    tunnel's public-hostname route while Access stays in place, and record the

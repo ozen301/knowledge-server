@@ -1,6 +1,6 @@
 # Implementation plan
 
-Status: agreed plan, updated 2026-10-02. The
+Status: agreed plan, updated 2026-10-05. The
 [implementation tasks](implementation-tasks.md) track progress.
 
 ## Outcome
@@ -80,6 +80,11 @@ or container and appropriately limited mounts.
 | 7. Additional collections | Explicitly configured roots such as notes, papers, and projects | Source identity and filtering are consistent across tools and caches |
 | 8. Controlled writing, optional | Separate proposal or inbox workflow with vault-owner review | Proposals cannot mutate canonical notes through the read-only service |
 
+For Milestone 3, if no second identity is available for a live test, the
+evidence that other identities are refused is the origin's offline rejection
+of non-owner assertions and the owner-only Access policy; the live denial
+remains unverified.
+
 Web access does not depend on vector search or NAS-wide indexing.
 Authentication, source-access policy, TLS, resource limits, and restricted
 runtime mounts are part of remote exposure, not later cleanup.
@@ -98,9 +103,9 @@ owner-only policy, signs the vault owner in; Cloudflare Tunnel then forwards
 each request, with a signed assertion, to an HTTP entry point in the adapter
 layer. The core stays MCP-free, and stdio and the four tool contracts stay
 unchanged. The [web access plan](web-access.md) specifies the route, and
-Tasks 7–9 implement it. The HTTP entry point exists for a local synthetic
-trial; the [implementation tasks](implementation-tasks.md) track the
-remaining provisioning and live verification.
+Tasks 7–9 implement it. The synthetic ChatGPT trial succeeded with Managed
+OAuth and DCR; the [implementation tasks](implementation-tasks.md) record its
+evidence limitations and define the hardening and real-vault work.
 
 Reasons for this route:
 
@@ -110,20 +115,19 @@ Reasons for this route:
   implements no OAuth server. ChatGPT's documented OAuth requirements for
   MCP servers ([OpenAI's authentication
   guide](https://developers.openai.com/plugins/build/auth)) are the
-  compatibility target; the live trial confirms whether the integration
-  works.
+  compatibility target; the synthetic trial confirmed the integration.
 - cloudflared connects outbound, so no inbound router port forwarding is
   needed. Tailscale remains the private administration network.
 - The origin also validates Cloudflare's signed assertion and the pinned
   owner identity, so a request that reaches it without passing Access cannot
   use the tools.
 
-Accepted limitations: Managed OAuth is a Beta feature; Cloudflare handles
-decrypted traffic and keeps provider-side logs; immediate revocation of issued
-tokens after a policy change is not guaranteed; and compatibility between
-ChatGPT, Managed OAuth, and the SDK's HTTP transport is unproven until the
-first trial. These are rechecked before real-vault use, as the web access plan
-describes.
+Accepted limitations: Managed OAuth was documented as Beta when the design
+was agreed; Cloudflare handles decrypted traffic and keeps provider-side logs;
+immediate revocation of issued tokens after a policy change is not guaranteed;
+and the successful trial covers only invented notes and the tested client
+configuration. Provider status, compatibility, and data handling are rechecked
+before real-vault use, as the web access plan describes.
 
 WorkOS AuthKit is a contingency only if a demonstrated compatibility or
 identity limitation of Managed OAuth survives debugging; selecting it would

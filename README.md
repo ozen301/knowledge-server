@@ -11,14 +11,15 @@ read-only MCP tools over stdio to a local MCP host: `knowledge_search`,
 `knowledge_read`, `knowledge_list`, and `knowledge_info`. It has been checked
 with Claude Code and Codex CLI.
 
-`knowledge-server-http` serves the same tools over HTTP on loopback, for a
-trial with the invented sample notes only. It accepts only requests that
-carry a valid Cloudflare Access assertion for the pinned vault owner. The
-Cloudflare Access and Tunnel route is not yet provisioned, and ChatGPT
-compatibility is unverified. The [usage
+`knowledge-server-http` serves the same tools over HTTP on loopback, with the
+invented sample notes only. It accepts only requests that carry a valid
+Cloudflare Access assertion for the pinned vault owner. Through Cloudflare
+Access Managed OAuth and Tunnel, ChatGPT has used it to answer questions
+about the sample notes and cite the source note and line. Real-vault HTTP
+support and permanent deployment are not implemented yet. The [usage
 guide](docs/usage.md#prepare-the-synthetic-http-trial) describes the
 launcher, and the [implementation tasks](docs/implementation-tasks.md) track
-progress.
+progress and record the trial evidence.
 
 ## Quick start
 
@@ -94,7 +95,7 @@ GitHub Actions runs `scripts/check --ci` automatically only on pushes to
 - [Phase 1 contract](docs/phase-1-contract.md): agreed tool behavior and
   boundaries.
 - [Web access plan](docs/web-access.md): the HTTP security contract and remote
-  route for ChatGPT; live compatibility remains unverified.
+  route for ChatGPT, including the OAuth settings validated in the trial.
 - [Implementation tasks](docs/implementation-tasks.md): ordered tasks,
   acceptance criteria, and progress.
 - [Retrieval evaluation](docs/retrieval-evaluation.md): fixed questions about

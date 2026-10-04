@@ -175,14 +175,11 @@ so check the adapter when upgrading the SDK.
 ### Protected HTTP entry point
 
 The `knowledge-server-http` command is a second way to reach the same four
-tools: over HTTP instead of stdio. Currently it is a local launcher for a trial
-with invented notes only. It listens on `127.0.0.1` (loopback), so only
-programs on the same machine can connect. The public route and the live
-ChatGPT trial are not set up yet.
+tools: over HTTP instead of stdio. It serves invented notes only. It listens
+on `127.0.0.1` (loopback), so only programs on the same machine can connect.
 
-In the planned route, which the [web access plan](web-access.md) describes
-and no live test has confirmed, ChatGPT will reach the server through
-Cloudflare:
+In the tested route, which the [web access plan](web-access.md) describes,
+ChatGPT reaches the server through Cloudflare:
 
 ```text
 ChatGPT
@@ -192,11 +189,11 @@ ChatGPT
     -> knowledge-server-http on 127.0.0.1 on the same VM
 ```
 
-Cloudflare Access will protect the public hostname, and its Managed OAuth
-feature will act as the OAuth server for ChatGPT's sign-in, so this server
-implements no OAuth. cloudflared will open an outbound connection to
-Cloudflare Tunnel, so the router needs no open inbound port. Cloudflare will
-decrypt the traffic at its edge and serve the OAuth discovery documents.
+Cloudflare Access protects the public hostname, and its Managed OAuth
+feature acts as the OAuth server for ChatGPT's sign-in, so this server
+implements no OAuth. cloudflared opens an outbound connection to
+Cloudflare Tunnel, so the router needs no open inbound port. Cloudflare
+decrypts the traffic at its edge and serves the OAuth discovery documents.
 
 Each HTTP request passes a gate before any MCP handling, then reaches the
 same tools, knowledge core, and path policy as stdio:
@@ -210,8 +207,8 @@ HTTP request
 
 Streamable HTTP is the MCP SDK's transport for MCP over HTTP. The server
 runs it in stateless mode, so it keeps no MCP session between requests, and
-it answers with plain JSON instead of an event stream. Whether ChatGPT works
-with this mode is not yet known; the live trial will show it.
+it answers with plain JSON instead of an event stream. ChatGPT works with
+this mode.
 
 The gate first checks two ordinary HTTP headers. The `Host` header names the
 hostname that the client wanted to reach; the gate accepts only the
@@ -285,8 +282,7 @@ The code is in `adapter/`:
   forwards the server's startup and shutdown events to the SDK. It adds
   `Cache-Control: no-store` to every response that the application sends,
   which tells caches not to store the response. Error responses that Uvicorn
-  generates itself are outside this guarantee, and Cloudflare's live cache
-  behavior has not been verified.
+  generates itself are outside this guarantee.
 - `http_auth.py` holds the key cache (`CachedKeys`) and the assertion check
   (`AssertionVerifier`, built on PyJWT), which returns only yes or no.
 - `http_logging.py` restricts the HTTP process's log to fixed startup

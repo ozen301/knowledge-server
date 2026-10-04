@@ -1,12 +1,12 @@
 # Web access plan
 
 Status: agreed design, decided 2026-10-02; local HTTP contract updated
-2026-10-04. The protected loopback HTTP entry point and its synthetic-only
-launcher are implemented beside stdio. Cloudflare provisioning is incomplete
-and the live ChatGPT trial has not run, so the public route and ChatGPT
-compatibility are unverified. The [implementation
-plan](implementation-plan.md#web-access-route) explains why this route was
-chosen, and [Tasks 7–9](implementation-tasks.md) implement it and track
+2026-10-04; live-trial findings recorded 2026-10-05. The protected loopback
+HTTP entry point and its synthetic-only launcher are implemented beside
+stdio, and the synthetic ChatGPT trial through this route succeeded.
+Real-vault HTTP support and permanent deployment remain future work. The
+[implementation plan](implementation-plan.md#web-access-route) explains why
+this route was chosen, and [Tasks 7–9](implementation-tasks.md) track its
 progress.
 
 ## Route
@@ -52,13 +52,14 @@ tool results to OpenAI's models, as local hosts send them to their providers.
 The application's [log policy](#logging) covers only this application's logs,
 not Cloudflare's or OpenAI's.
 
-Managed OAuth is a Beta feature, and compatibility between ChatGPT, Managed
-OAuth, and the SDK's HTTP transport is unproven until the Task 7 live trial.
-Task 9 in the [implementation tasks](implementation-tasks.md) rechecks these
+Managed OAuth was documented as a Beta feature when this design was agreed.
+The Task 7 synthetic trial confirmed compatibility between ChatGPT, Managed
+OAuth, and the SDK's HTTP transport for the tested configuration. Task 9 in
+the [implementation tasks](implementation-tasks.md) rechecks these
 dependencies and the chosen client account's data handling before the vault
-owner explicitly authorizes the real vault scope. That
-authorization covers these disclosed dependencies and the account choice; no
-separate Beta approval is needed.
+owner explicitly authorizes the real vault scope. That authorization covers
+these disclosed dependencies and the account choice; no separate Beta
+approval is needed.
 
 ## Edge configuration
 
@@ -85,16 +86,52 @@ supports RFC 8707 resource indicators. Cloudflare documents that Access
 answers unauthenticated non-browser requests with a 401 challenge and serves
 the discovery metadata, so discovery stays reachable without login.
 
-- Use a registration method that both sides support.
+- DCR is the validated registration method. In the synthetic trial, ChatGPT
+  selected it automatically; Cloudflare did not advertise CIMD. Revisit CIMD
+  only if the provider advertises support and there is a concrete
+  operational reason to change.
 - Inspect the metadata actually served. Use the resource identifier that
   Cloudflare advertises, whether the hostname or a path, rather than forcing
   `/mcp`, and check that discovery and token requests use the same value.
-- Copy any required redirect URI exactly from ChatGPT's server management
-  page.
+- Check the redirect URI shown in ChatGPT's server management page against
+  the provider's allowlist. According to OpenAI's [redirect
+  guidance](https://developers.openai.com/plugins/build/auth#redirect-url),
+  its form depends on the authorization server's issuer-identification
+  support. The trial settings below record what worked; they are not a
+  universal callback configuration.
 - Discovery is served by the edge; the origin serves only the MCP endpoint.
-  If the trial shows that origin-served discovery is required, it needs a
+  If a future integration requires origin-served discovery, it needs a
   separate specification and must never expose tools without a valid
   assertion.
+
+### OAuth settings validated in the synthetic trial
+
+The vault owner's trial report records these values. The URLs are
+illustrative: `mcp.example.com` and `example` replace the personal hostname
+and team name, and the tested structure is preserved.
+
+| Item | Observed value |
+|---|---|
+| MCP endpoint and advertised resource | `https://mcp.example.com/mcp` |
+| Authorization server (issuer) | `https://example.cloudflareaccess.com` |
+| Protected-resource metadata, named by the 401 `WWW-Authenticate` challenge | `https://mcp.example.com/.well-known/cloudflare-access-protected-resource/mcp` |
+| Authorization-server discovery | `https://mcp.example.com/.well-known/oauth-authorization-server` |
+
+Discovery advertised authorization code and refresh-token grants, DCR, PKCE
+`S256`, and token authentication method `none` alongside client-secret
+methods. No application scopes or OIDC support were advertised, and no base
+scopes were added manually.
+
+The first ChatGPT connection attempt failed with a generic settings
+rejection. In this trial, adding `https://chatgpt.com/connector/oauth/*` to
+Managed OAuth's redirect allowlist resolved it. Both **Allow localhost
+clients** and **Allow loopback clients** remained disabled. These settings
+govern OAuth callbacks, not the origin's loopback listener or its
+`allowed_origins` setting. The connection worked with these settings.
+
+The [Task 7
+record](implementation-tasks.md#task-7--http-entry-point-and-synthetic-chatgpt-trial-complete)
+lists the observed results and accepted evidence limitations.
 
 ## Origin HTTP entry point
 
@@ -105,9 +142,8 @@ transport, in stateless mode with JSON responses. Their schemas and read-only
 annotations are semantically equal to the stdio server's. It adds no `search`
 or `fetch` wrapper tools; OpenAI's [developer-mode
 guide](https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt)
-does not require them. The installed `mcp` 2.2.0 supports this mode, but
-whether ChatGPT works with it is unverified, so the live trial records the
-negotiated protocol version.
+does not require them. The installed `mcp` 2.2.0 supports this mode, and
+ChatGPT used it successfully in the synthetic trial.
 
 The SDK's OAuth authentication settings stay unconfigured. Its bearer
 authentication reads the `Authorization` header, which here carries
@@ -176,8 +212,10 @@ printed, logged, persisted, given to agents, or committed. Only the verified
 owner identifier itself may be stored, by the procedure or the vault owner,
 directly in private runtime configuration outside Git.
 
-No such procedure exists yet. Provisioning must define it privately, together
-with the private launch configuration. The HTTP server has no debug,
+For the synthetic trial, the vault owner established the identifier privately
+from an authenticated Cloudflare Access identity session and stored it in
+private launch configuration. The reproducible provisioning procedure stays
+in the vault owner's private deployment notes. The HTTP server has no debug,
 bootstrap, or claim-inspection mode. The launcher refuses to start without an
 owner identifier, and there is no anonymous or accept-any-identity mode, so no
 tool is reachable before the identifier is pinned.
@@ -339,13 +377,15 @@ restrictions.
 
 ## Shutdown and revocation
 
-Stopping cloudflared or the origin is the local shutdown. Before real-vault
-use, test disabling the tunnel's public-hostname route from Cloudflare while
-Access protection stays in place, and record the configuration behavior, the
-effect on active connections, and the observed time to take effect. If this
-route cannot be disabled reliably, choose and verify another supported
-routing shutdown. Do not count DNS deletion or credential rotation as
-immediate shutdown without proof.
+Stopping cloudflared or the origin is the local shutdown. Both were tested
+independently in the synthetic trial: ChatGPT lost access, then recovered
+after the stopped process restarted. Before real-vault use, test disabling
+the tunnel's public-hostname route from Cloudflare while Access protection
+stays in place, and record the configuration behavior, the effect on active
+connections, and the observed time to take effect. If this route cannot be
+disabled reliably, choose and verify another supported routing shutdown. Do
+not count DNS deletion or credential rotation as immediate shutdown without
+proof.
 
 Never disable or delete Access protection as a kill switch, because removing
 the gate does not stop routing. A dedicated, tested deny-all policy may add
@@ -382,5 +422,7 @@ MCP portals or server aggregation; and NAS redesign.
 
 Provider statements were checked against the linked pages on 2026-10-02.
 The application-token, Managed OAuth, and JWT API documentation was rechecked
-for local implementation on 2026-10-04. Live compatibility is unproven.
-Recheck the pages before Task 9.
+for local implementation on 2026-10-04. OpenAI's authentication guide was
+rechecked on 2026-10-05 for registration and redirect guidance. The live
+results are vault-owner-reported evidence, separate from provider claims.
+Recheck the provider pages before Task 9.

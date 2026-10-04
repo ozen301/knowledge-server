@@ -28,6 +28,10 @@ a task is worth the handoff cost; the skill states the limits.
   files or repository state. The vault owner manages synchronization.
 - Keep credentials, personal note contents, private reference documents,
   runtime state, and logs out of commits and agent review handoffs.
+- Keep personal domains, hostnames, endpoint URLs, and deployment identifiers
+  (including provider team names) out of Git-tracked files, including
+  documentation and examples. Use reserved example domains or clearly marked
+  placeholders.
 - Test with small collections of invented notes. Automated tests must run
   without the real vault, external accounts, network services, or a local
   `.env`.
@@ -102,7 +106,8 @@ for whitespace errors, and summarizes the results. CI runs
 `scripts/check --ci` automatically on pushes to `main` and, on request, on
 another pushed branch: start it from the Actions tab or with
 `gh workflow run check.yml --ref <branch>`. Validate unpushed work locally. For
-documentation-only changes, check whitespace, links, claims, and examples.
+any documentation change, check whitespace, links, claims, and examples,
+and complete the documentation review below.
 Repeat checks only after further changes or when investigating a failure.
 
 ## Documentation
@@ -144,13 +149,16 @@ Conventions:
   "Bottom Line," and "In short."
 - Keep detailed progress in `docs/implementation-tasks.md`; summarize current
   capabilities in the README. Shorten each completed task to what exists,
-  where it is, and what later tasks need to know.
-- Within the task's scope, remove obsolete text, finished plan details, and
-  duplication. Preserve active requirements, open decisions, operational
-  caveats, and reproducible evidence.
-- Explain each topic in one place; summarize and link elsewhere. Git preserves
-  history, so delete removed text instead of moving it to an appendix or
-  archive.
+  essential validation evidence, and what later tasks need to know.
+- Before drafting, identify the reader's need and choose one primary document
+  for each topic. Match the detail to that document's role; summarize and link
+  elsewhere. Draft from the final outcome, not the conversation or work log.
+- Before finishing, review the documentation diff for relevance, placement,
+  and duplication. Remove detail that does not help the reader understand,
+  use, or maintain the project, including obsolete plans and incidental trial
+  history. Preserve active requirements, open decisions, operational caveats,
+  and evidence needed to reproduce or assess a result. Git preserves history;
+  delete removed text instead of moving it to an appendix or archive.
 - Wrap prose at about 80 columns. Tables, code, and long URLs are exempt.
 
 ## Docstrings and comments

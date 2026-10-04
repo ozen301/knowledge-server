@@ -7,10 +7,11 @@ contract](phase-1-contract.md) defines the exact tool behavior.
 
 For stdio, the MCP host starts the server as a subprocess and talks to it
 over stdin and stdout; you do not start it yourself. The separate HTTP
-launcher, which you start yourself, runs a protected loopback service for a
-trial with invented notes. The Cloudflare route and the ChatGPT connection
-still need provisioning and a live trial, as the [web access
-plan](web-access.md) describes.
+launcher, which you start yourself, runs a protected loopback service with
+invented notes only. ChatGPT can use it through Cloudflare Access Managed
+OAuth and Tunnel; the [Task 7
+record](implementation-tasks.md#task-7--http-entry-point-and-synthetic-chatgpt-trial-complete)
+lists the trial results and accepted evidence limitations.
 
 ## Requirements
 
@@ -107,8 +108,7 @@ the server's environment.
 `knowledge-server-http` serves the same four tools at `/mcp` on IPv4
 loopback, for a trial with the invented sample notes only. Every request
 needs a valid signed Cloudflare assertion for the pinned owner subject; the
-opaque OAuth access token alone is not enough. The public route and ChatGPT
-compatibility are not yet verified. The [HTTP
+opaque OAuth access token alone is not enough. The [HTTP
 contract](web-access.md#local-http-implementation-contract) defines the exact
 settings and checks.
 
@@ -126,10 +126,9 @@ settings and checks.
    the directory as it is at each request.
 2. During authorized provisioning, obtain the Access application's AUD tag
    and privately establish the owner subject as the [owner identity
-   procedure](web-access.md#owner-identity) requires. That
-   procedure is not yet written. Do not paste assertions, claims, or
-   credentials into chat. The launcher does not start without an owner
-   subject, so no tool can be used before it is pinned.
+   procedure](web-access.md#owner-identity) requires. Do not paste
+   assertions, claims, or credentials into chat. The launcher does not start
+   without an owner subject, so no tool can be used before it is pinned.
 3. Save this TOML in a private file outside the repository. Set `root` to
    the directory from step 1. Replace `team_domain` and `public_host` with
    your Cloudflare team domain and MCP hostname, and replace the audience
@@ -149,8 +148,8 @@ settings and checks.
 
    `allowed_origins` accepts exact values only. A request without `Origin`
    is accepted; with this empty list, any request that sends `Origin` is
-   rejected. Add an origin only after verifying that the chosen client needs
-   it.
+   rejected. The empty list was sufficient for the ChatGPT trial. Add an
+   origin only after verifying that the chosen client needs it.
 4. From a revision whose local validation and diff review passed, start the
    launcher:
 
@@ -235,10 +234,10 @@ send to that provider. The provider's terms and your account settings decide
 how long it keeps them. The hosts also save session transcripts locally:
 Claude Code under `~/.claude/projects/` and Codex under `~/.codex/sessions/`.
 The server itself writes only short diagnostic messages to stderr, never note
-contents or queries. In the planned web route, Cloudflare also handles
-decrypted requests and responses, and ChatGPT sends tool results to OpenAI.
-See the [web trust boundary](web-access.md#trust-boundary-and-data-handling)
-before provisioning or considering real-vault use.
+contents or queries. In the web route, Cloudflare also handles decrypted
+requests and responses, and ChatGPT sends tool results to OpenAI. See the
+[web trust boundary](web-access.md#trust-boundary-and-data-handling) before
+provisioning or considering real-vault use.
 
 ## Use the core from Python
 
