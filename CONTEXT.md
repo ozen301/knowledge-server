@@ -15,11 +15,16 @@ copies of the knowledge vault. It has no checked-out working tree.
 _Avoid_: Local vault checkout, searchable vault
 
 **Local vault checkout**:
-The local Git checkout of the knowledge vault that the server reads. It is
-configured through `KNOWLEDGE_ROOT`, and the code calls it the root. Its
+A local Git checkout of the knowledge vault from which the server reads. Its
 current contents may differ from its last commit. Shorten it to "local
 checkout" only where the context is clear.
 _Avoid_: Vault remote, bare repository
+
+**Root**:
+The directory that the server exposes: a local vault checkout or one subtree
+of it, configured explicitly through `KNOWLEDGE_ROOT` for stdio or the HTTP
+configuration file. Tool paths and citations are relative to it.
+_Avoid_: Vault, when only the exposed directory is meant
 
 **Vault owner**:
 The person who owns the knowledge vault, directs this project, and makes the

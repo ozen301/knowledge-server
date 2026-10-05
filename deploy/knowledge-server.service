@@ -1,0 +1,23 @@
+# knowledge-server HTTP entry point for the Cloudflare Tunnel route. Install
+# and operate it as docs/usage.md#run-the-http-service-in-the-vm describes.
+# ProtectSystem=strict mounts the whole file system read-only for the
+# process, so it cannot write to the notes even where permissions allow it.
+
+[Unit]
+Description=knowledge-server HTTP entry point
+After=network.target
+
+[Service]
+User=knowledge-server
+ExecStart=/opt/knowledge-server/.venv/bin/knowledge-server-http --config /etc/knowledge-server/config.toml
+# The Ubuntu ripgrep package installs rg as /usr/bin/rg.
+Environment=PATH=/usr/bin:/bin
+Restart=on-failure
+RestartSec=5
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

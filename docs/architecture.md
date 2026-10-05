@@ -23,8 +23,8 @@ the server returns, not instructions for the server.
 ## The big picture
 
 The server is one Python package that runs as one process. It serves the
-tools over stdio and, for a trial with invented notes, through a [protected
-HTTP entry point](#protected-http-entry-point) on loopback. Requests pass
+tools over stdio and through a [protected HTTP entry
+point](#protected-http-entry-point) on loopback. Requests pass
 through three layers. This diagram shows the stdio route; HTTP requests
 enter through `adapter/http*.py` and use the same tools, core, and policy:
 
@@ -35,7 +35,7 @@ MCP host (for example, a desktop AI client)
 MCP adapter
     adapter/server.py  - four tool wrappers, schemas, error translation
     __main__.py        - startup checks and stdio launch
-    adapter/http*.py   - protected HTTP entry point (synthetic trial only)
+    adapter/http*.py   - protected HTTP entry point and its launcher
     |
     v
 Knowledge core
@@ -175,11 +175,10 @@ so check the adapter when upgrading the SDK.
 ### Protected HTTP entry point
 
 The `knowledge-server-http` command is a second way to reach the same four
-tools: over HTTP instead of stdio. It currently serves invented notes only.
-It listens on `127.0.0.1` (loopback), so only programs in the same network
-namespace, such as others on the same machine, can connect. The [web access
-plan](web-access.md) specifies the remote route and the exact HTTP contract,
-and describes the planned real-vault mode and permanent VM services.
+tools: over HTTP instead of stdio. It listens on `127.0.0.1` (loopback), so
+only programs in the same network namespace, such as others on the same
+machine, can connect. The [web access plan](web-access.md) specifies the
+remote route, the exact HTTP contract, and the VM services.
 
 In the tested route, ChatGPT reaches the server through Cloudflare:
 
@@ -202,8 +201,9 @@ same tools, knowledge core, and path policy as stdio:
 ```text
 HTTP request
     -> gate: Host, then Origin, then Cloudflare Access assertion
+    -> bounds: requests in progress, then body size and read time
     -> SDK Streamable HTTP at /mcp (stateless, JSON responses)
-    -> the same four tools -> knowledge core -> trial directory
+    -> the same four tools -> knowledge core -> root
 ```
 
 - The `Host` header must name the configured public hostname or a loopback
@@ -220,42 +220,58 @@ HTTP request
 
 A request that fails a check is refused with fixed text before the SDK sees
 it. Host and Origin are checked first, so a request rejected by either check
-cannot make the server fetch keys. In stateless mode, the server keeps no MCP
+cannot make the server fetch keys. Only an authorized request then counts
+toward the limit of requests in progress and has its body read. The gate
+counts body bytes as they arrive and passes the complete body to the SDK, so
+neither a large body nor a slow one can hold the server's memory or a place
+for long. In stateless mode, the server keeps no MCP
 session between requests and answers with plain JSON instead of an event
 stream. The [assertion validation](web-access.md#assertion-validation) rules
 list the exact claim checks.
 
 The launcher reads one private TOML file, named on the command line, that
-holds the trial directory and the Access settings. It ignores
+holds the launch mode, the root, and the Access settings. It ignores
 `KNOWLEDGE_ROOT` and `.env` files, so an environment prepared for stdio
-cannot point the HTTP server at the real vault; the directory still passes
-the same root validation in `config.py`. Before serving, the launcher
-compares the directory with `synthetic-vault.json`, a packaged list of the
-sample notes and their SHA-256 digests, and does not start if anything
-differs. This check runs only at startup, and the tools read the directory
-live afterwards, so keep the directory dedicated to the invented notes while
-the server runs.
+cannot point the HTTP server at the real vault; the root still passes the
+same validation in `config.py`. The mode has no default:
+
+- **Synthetic mode** serves the invented notes. Before serving, the launcher
+  compares the root with `synthetic-vault.json`, a packaged list of the
+  sample notes and their SHA-256 digests, and does not start if anything
+  differs. This check runs only at startup, and the tools read the directory
+  live afterwards, so keep the directory dedicated to the invented notes
+  while the server runs.
+- **Vault mode** serves a local vault checkout or one subtree of it. The
+  launcher refuses to start if it can write to the root, which catches a
+  launch outside the read-only service configuration.
 
 The code is in `adapter/`:
 
 - `http_main.py` starts the server. It loads the configuration with
-  `http_config.py`, runs the check in `synthetic.py`, and starts Uvicorn, the
-  web server, on `127.0.0.1` without proxy-header interpretation, so a
-  request cannot change its apparent client address or scheme. If the
-  application's startup step fails, the launch fails.
+  `http_config.py`, runs the mode's root check (in synthetic mode, the one in
+  `synthetic.py`), and starts Uvicorn, the web server, on `127.0.0.1` without
+  proxy-header interpretation, so a request cannot change its apparent
+  client address or scheme. If the application's startup step fails, the
+  launch fails.
 - `http.py` creates the SDK's ASGI application (ASGI is Python's standard
   interface between web servers and applications) and wraps all of it, on
-  every path, in `HTTPApplication`, the gate. The gate forwards the server's
-  startup and shutdown events to the SDK and adds `Cache-Control: no-store`
-  to every response that the application sends. Error responses that Uvicorn
-  generates itself are outside this guarantee.
+  every path, in `HTTPApplication`, the gate, which also applies the request
+  bounds. The gate forwards the server's startup and shutdown events to the
+  SDK and adds `Cache-Control: no-store` to every response that the
+  application sends. Error responses that Uvicorn generates itself are
+  outside this guarantee.
 - `http_auth.py` holds the bounded, rate-limited signing-key cache
   (`CachedKeys`) and the assertion check (`AssertionVerifier`, built on
   PyJWT), which returns only yes or no.
-- `http_logging.py` restricts the HTTP process's log to fixed startup
-  categories and each request's method, status, and latency. It drops all
-  other diagnostics, which could contain tokens, headers, queries, or note
-  text.
+- `http_logging.py` restricts the HTTP process's log to fixed startup and
+  event categories, such as a failed key fetch or an unexpected tool failure,
+  and each request's method, status, and latency. It drops all other
+  diagnostics, which could contain tokens, headers, queries, or note text.
+
+`deploy/` holds the server's systemd unit, which runs it as a dedicated
+account with a read-only view of the file system, and an example
+configuration. The [usage guide](usage.md#run-the-http-service-in-the-vm)
+installs them with cloudflared and the vault synchronization.
 
 The [HTTP contract](web-access.md#local-http-implementation-contract) gives
 the exact settings, checks, and limits, and the [owner

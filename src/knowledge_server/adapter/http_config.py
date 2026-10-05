@@ -1,9 +1,10 @@
-"""Validated HTTP configuration and explicit synthetic trial configuration."""
+"""Validated HTTP settings and the explicit HTTP launch configuration."""
 
 import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 from knowledge_server.config import ConfigurationError, load_config
@@ -142,33 +143,40 @@ class HTTPConfig:
         )
 
 
+type LaunchMode = Literal["synthetic", "vault"]
+_MODES: tuple[LaunchMode, ...] = ("synthetic", "vault")
+
+
 @dataclass(frozen=True, slots=True)
-class TrialConfig:
-    """An explicitly selected synthetic root and its HTTP settings.
+class LaunchConfig:
+    """An explicitly selected launch mode, root, and HTTP settings.
 
     Attributes:
-        root: Resolved absolute path to a dedicated invented-note directory.
+        mode: `synthetic` for the invented sample notes, or `vault` for a real
+            local vault checkout or one subtree of it. The launcher applies
+            the mode's startup check to `root`.
+        root: Resolved absolute path to the directory that the tools expose.
         http: The validated transport and authorization settings.
     """
 
+    mode: LaunchMode
     root: Path
     http: HTTPConfig
 
 
-def load_trial_config(path: Path) -> TrialConfig:
-    """Load the synthetic trial settings from one explicit TOML file.
+def load_launch_config(path: Path) -> LaunchConfig:
+    """Load the HTTP launch settings from one explicit TOML file.
 
-    The file must set `mode = "synthetic"`, `root`, and the required
-    `HTTPConfig` fields; unknown fields are rejected. `KNOWLEDGE_ROOT` and
-    `.env` files are not read, but `root` passes the same validation as
-    `KNOWLEDGE_ROOT`.
+    The file must set `mode` to `"synthetic"` or `"vault"`, `root`, and the
+    required `HTTPConfig` fields; unknown fields are rejected, and no mode is
+    assumed. `KNOWLEDGE_ROOT` and `.env` files are not read, but `root`
+    passes the same validation as `KNOWLEDGE_ROOT`.
 
     Args:
-        path: Absolute path to a private synthetic trial configuration file
-            of at most 16 KiB.
+        path: Absolute path to a private configuration file of at most 16 KiB.
 
     Returns:
-        Validated settings; the caller must also verify the synthetic contents.
+        Validated settings; the caller must also apply the mode's root check.
 
     Raises:
         ConfigurationError: If the file or any setting is invalid.
@@ -181,7 +189,8 @@ def load_trial_config(path: Path) -> TrialConfig:
         if len(raw) > 16384:
             raise ValueError
         values = tomllib.loads(raw.decode("utf-8"))
-        if values.pop("mode", None) != "synthetic":
+        mode = values.pop("mode", None)
+        if mode not in _MODES:
             raise ValueError
         root_value = values.pop("root")
         if not isinstance(root_value, str):
@@ -191,6 +200,6 @@ def load_trial_config(path: Path) -> TrialConfig:
         if not isinstance(origins, list):
             raise TypeError
         http = HTTPConfig(**values, allowed_origins=tuple(origins))
-        return TrialConfig(root, http)
+        return LaunchConfig(mode, root, http)
     except OSError, ValueError, TypeError, KeyError, ConfigurationError:
-        raise ConfigurationError("Synthetic HTTP configuration is invalid.") from None
+        raise ConfigurationError("HTTP configuration is invalid.") from None

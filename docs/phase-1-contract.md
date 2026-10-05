@@ -8,13 +8,14 @@ these tools with the same behavior.
 
 ## Configuration and common policy
 
-- For stdio, `KNOWLEDGE_ROOT` is required and points to the local vault
-  checkout. The synthetic HTTP launcher ignores it and takes the root from
-  its private configuration file, then checks that the root holds exactly the
-  invented sample notes ([launch
-  configuration](web-access.md#launch-configuration)). Either way, the root
-  must be an explicit absolute path to an existing directory that is readable
-  and searchable. It is resolved once on startup, and a root symlink may
+- The root is the directory the tools expose: the local vault checkout or
+  one subtree of it. For stdio, `KNOWLEDGE_ROOT` is required and names it.
+  The HTTP launcher ignores that variable and takes the root from its private
+  configuration file; in synthetic mode, it also checks that the root holds
+  exactly the invented sample notes ([launch
+  modes](web-access.md#launch-modes)). Either way, the root must be an
+  explicit absolute path to an existing directory that is readable and
+  searchable. It is resolved once on startup, and a root symlink may
   resolve at that point. The server reads its files directly; it does not
   require or inspect Git metadata and does not run Git commands. Example
   value: `/path/to/knowledge-vault`; replace it with a local absolute path.

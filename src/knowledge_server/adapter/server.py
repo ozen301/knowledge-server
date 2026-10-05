@@ -46,6 +46,8 @@ from knowledge_server.core.reader import list_directory, note_info, read_note
 from knowledge_server.core.search import search_notes
 
 _logger = logging.getLogger(__name__)
+# The HTTP log filter recognizes this record by its format string.
+TOOL_FAILURE_FORMAT = "%s failed with %s%s"
 
 _SEARCH_DESCRIPTION = (
     "Find lines in the Markdown notes of the knowledge vault that contain a "
@@ -225,4 +227,4 @@ def _log_unexpected(tool: str, error: Exception) -> None:
     if frames:
         frame = frames[-1]
         location = f" at {Path(frame.filename).name}:{frame.lineno} in {frame.name}"
-    _logger.error("%s failed with %s%s", tool, type(error).__name__, location)
+    _logger.error(TOOL_FAILURE_FORMAT, tool, type(error).__name__, location)

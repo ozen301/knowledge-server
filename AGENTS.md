@@ -36,7 +36,7 @@ a task is worth the handoff cost; the skill states the limits.
   without the real vault, external accounts, network services, or a local
   `.env`.
 - HTTP tests use invented signing keys and an injected key fetch. The
-  synthetic HTTP launcher accepts only an exact copy of
+  HTTP launcher's synthetic mode accepts only an exact copy of
   `tests/fixtures/vault/`, listed with SHA-256 digests in
   `src/knowledge_server/adapter/synthetic-vault.json`. When fixture notes
   change, update the manifest in the same change; the guard tests in

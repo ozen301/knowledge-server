@@ -1,14 +1,15 @@
-"""Launch the protected loopback HTTP server with a verified synthetic root."""
+"""Launch the protected loopback HTTP server in an explicit mode."""
 
 import argparse
 import logging
+import os
 import shutil
 from pathlib import Path
 
 import uvicorn
 
 from knowledge_server.adapter.http import create_http_app
-from knowledge_server.adapter.http_config import load_trial_config
+from knowledge_server.adapter.http_config import load_launch_config
 from knowledge_server.adapter.http_logging import STARTUP_FORMAT, configure_http_logging
 from knowledge_server.adapter.synthetic import verify_synthetic_root
 from knowledge_server.config import ConfigurationError
@@ -20,16 +21,18 @@ _logger = logging.getLogger("knowledge_server.http")
 class _Parser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         # argparse's default diagnostics echo untrusted argument values.
-        raise ConfigurationError("Synthetic HTTP configuration is required.")
+        raise ConfigurationError("HTTP configuration is required.")
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Validate synthetic configuration, then run on IPv4 loopback.
+    """Validate the configuration and root, then run on IPv4 loopback.
 
-    The server runs until it receives a signal. After SIGINT (Ctrl-C), Uvicorn
-    shuts down gracefully and this function returns zero. After SIGTERM,
-    Uvicorn shuts down gracefully and then re-raises the signal, so the
-    process ends by SIGTERM instead of returning.
+    In `synthetic` mode, the root must hold exactly the packaged sample notes.
+    In `vault` mode, the process must not be able to write to the root
+    directory. The server then runs until it receives a signal. After SIGINT
+    (Ctrl-C), Uvicorn shuts down gracefully and this function returns zero.
+    After SIGTERM, Uvicorn shuts down gracefully and then re-raises the
+    signal, so the process ends by SIGTERM instead of returning.
 
     Args:
         argv: Optional explicit command arguments; None uses process arguments.
@@ -39,22 +42,26 @@ def main(argv: list[str] | None = None) -> int:
         or runtime failure, which logs only a fixed category.
     """
     configure_http_logging()
-    parser = _Parser(description="Run a protected synthetic-only HTTP trial.")
+    parser = _Parser(description="Run the protected loopback HTTP server.")
     parser.add_argument("--config", required=True, type=Path)
     try:
         args = parser.parse_args(argv)
-        trial = load_trial_config(args.config)
-        verify_synthetic_root(trial.root)
-        policy = PathPolicy(trial.root)
+        launch = load_launch_config(args.config)
+        if launch.mode == "synthetic":
+            verify_synthetic_root(launch.root)
+        elif os.access(launch.root, os.W_OK):
+            _logger.error(STARTUP_FORMAT, "writable-root")
+            return 1
+        policy = PathPolicy(launch.root)
         ripgrep = shutil.which("rg")
         if ripgrep is None:
             _logger.error(STARTUP_FORMAT, "missing-ripgrep")
             return 1
-        app = create_http_app(policy, trial.http, ripgrep=ripgrep)
+        app = create_http_app(policy, launch.http, ripgrep=ripgrep)
         uvicorn.run(
             app,
             host="127.0.0.1",
-            port=trial.http.port,
+            port=launch.http.port,
             access_log=False,
             proxy_headers=False,
             log_config=None,

@@ -1,9 +1,10 @@
-"""Offline security, transport, and synthetic-launch tests for HTTP access."""
+"""Offline security, transport, bound, and launch tests for HTTP access."""
 
 import asyncio
 import io
 import json
 import logging
+import os
 import shutil
 import signal
 import subprocess
@@ -21,7 +22,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from jwt.algorithms import ECAlgorithm, RSAAlgorithm
 from mcp import Client
-from mcp_types import CallToolResult, Tool
+from mcp_types import CallToolResult, TextContent, Tool
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from knowledge_server.adapter.http import HTTPApplication, create_http_app
@@ -30,7 +31,7 @@ from knowledge_server.adapter.http_auth import (
     CachedKeys,
     JWKSFetcher,
 )
-from knowledge_server.adapter.http_config import HTTPConfig, load_trial_config
+from knowledge_server.adapter.http_config import HTTPConfig, load_launch_config
 from knowledge_server.adapter.http_logging import configure_http_logging
 from knowledge_server.adapter.server import create_server
 from knowledge_server.adapter.synthetic import verify_synthetic_root
@@ -771,31 +772,39 @@ def test_invalid_http_configuration(
         replace(config, **changes)
 
 
-def _trial_text(root: Path) -> str:
-    return f'mode = "synthetic"\nroot = {json.dumps(str(root))}\nteam_domain = "example.cloudflareaccess.com"\naudience = "synthetic-audience"\nowner_subject = "synthetic-owner"\npublic_host = "mcp.example.com"\n'
+def _config_text(root: Path, mode: str = "synthetic") -> str:
+    return f'mode = "{mode}"\nroot = {json.dumps(str(root))}\nteam_domain = "example.cloudflareaccess.com"\naudience = "synthetic-audience"\nowner_subject = "synthetic-owner"\npublic_host = "mcp.example.com"\n'
 
 
-def test_explicit_trial_configuration_and_guard(
+def test_explicit_launch_configuration_and_guard(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The TOML root is used even with `KNOWLEDGE_ROOT` set; invalid files fail."""
+    """The TOML selects the mode and root, even with `KNOWLEDGE_ROOT` set.
+
+    Only the two named modes load; a missing mode, a missing field, or an
+    unknown field fails.
+    """
     root = tmp_path / "invented"
     shutil.copytree(FIXTURES, root)
     monkeypatch.setenv("KNOWLEDGE_ROOT", str(tmp_path / "real-vault-do-not-open"))
-    path = tmp_path / "trial.toml"
-    path.write_text(_trial_text(root), encoding="utf-8")
-    trial = load_trial_config(path)
-    assert trial.root == root
-    verify_synthetic_root(trial.root)
+    path = tmp_path / "config.toml"
+    for mode in ("synthetic", "vault"):
+        path.write_text(_config_text(root, mode), encoding="utf-8")
+        launch = load_launch_config(path)
+        assert (launch.mode, launch.root) == (mode, root)
+    verify_synthetic_root(launch.root)
     for text in (
-        _trial_text(root).replace('mode = "synthetic"', 'mode = "real"'),
-        _trial_text(root).replace('owner_subject = "synthetic-owner"', ""),
-        _trial_text(root).replace(f"root = {json.dumps(str(root))}", ""),
-        _trial_text(root) + 'unknown = "value"\n',
+        _config_text(root, "real"),
+        _config_text(root, "VAULT"),
+        _config_text(root).replace('mode = "synthetic"\n', ""),
+        _config_text(root).replace('mode = "synthetic"', "mode = true"),
+        _config_text(root).replace('owner_subject = "synthetic-owner"', ""),
+        _config_text(root).replace(f"root = {json.dumps(str(root))}", ""),
+        _config_text(root) + 'unknown = "value"\n',
     ):
         path.write_text(text, encoding="utf-8")
         with pytest.raises(ConfigurationError):
-            load_trial_config(path)
+            load_launch_config(path)
 
 
 @pytest.mark.parametrize("change", ["modify", "extra", "missing", "symlink", "fifo"])
@@ -899,20 +908,40 @@ def test_http_logging_excludes_sentinels(
             logger.filters = state[3]
 
 
-@pytest.mark.parametrize("stop_signal", [signal.SIGTERM, signal.SIGINT])
+@pytest.mark.parametrize(
+    "stop_signal,mode",
+    [
+        (signal.SIGTERM, "synthetic"),
+        (signal.SIGINT, "synthetic"),
+        (signal.SIGTERM, "vault"),
+    ],
+)
 def test_loopback_process_rejects_without_network_keys(
-    tmp_path: Path, stop_signal: signal.Signals
+    tmp_path: Path, stop_signal: signal.Signals, mode: str
 ) -> None:
-    """A real launch binds only loopback, rejects probes safely, and stops cleanly."""
+    """A real launch binds only loopback, rejects probes safely, and stops cleanly.
+
+    The vault mode serves invented notes that are not the sample set from a
+    root that the process cannot write to.
+    """
     import socket
 
     root = tmp_path / "invented"
-    shutil.copytree(FIXTURES, root)
+    if mode == "synthetic":
+        shutil.copytree(FIXTURES, root)
+    else:
+        if os.geteuid() == 0:
+            pytest.skip("root can write to any directory")
+        root.mkdir()
+        (root / "invented.md").write_text(f"# {SENTINEL}\n", encoding="utf-8")
+        root.chmod(0o555)
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
-    configuration = tmp_path / "trial.toml"
-    configuration.write_text(_trial_text(root) + f"port = {port}\n", encoding="utf-8")
+    configuration = tmp_path / "config.toml"
+    configuration.write_text(
+        _config_text(root, mode) + f"port = {port}\n", encoding="utf-8"
+    )
     process = subprocess.Popen(
         [
             sys.executable,
@@ -967,6 +996,7 @@ def test_loopback_process_rejects_without_network_keys(
         except subprocess.TimeoutExpired:
             process.kill()
             stdout, stderr = process.communicate(timeout=5)
+        root.chmod(0o755)
     # After its graceful shutdown, Uvicorn re-raises the captured signal.
     # uvicorn.run absorbs the resulting KeyboardInterrupt for SIGINT, while
     # SIGTERM ends the process.
@@ -997,7 +1027,7 @@ def test_http_bind_failure_has_safe_diagnostic(tmp_path: Path) -> None:
         occupied.listen()
         port = occupied.getsockname()[1]
         configuration.write_text(
-            _trial_text(FIXTURES.resolve()) + f"port = {port}\n", encoding="utf-8"
+            _config_text(FIXTURES.resolve()) + f"port = {port}\n", encoding="utf-8"
         )
         result = subprocess.run(
             [
@@ -1160,9 +1190,9 @@ def test_failed_lifespan_stops_launch_safely(tmp_path: Path) -> None:
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
-    configuration = tmp_path / "trial.toml"
+    configuration = tmp_path / "config.toml"
     configuration.write_text(
-        _trial_text(FIXTURES.resolve()) + f"port = {port}\n", encoding="utf-8"
+        _config_text(FIXTURES.resolve()) + f"port = {port}\n", encoding="utf-8"
     )
     script = """
 import sys
@@ -1188,3 +1218,414 @@ raise SystemExit(http_main.main(["--config", sys.argv[1]]))
     assert result.returncode == 1
     assert result.stdout == ""
     assert result.stderr == "knowledge-server-http startup category=runtime\n"
+
+
+def test_vault_mode_refuses_writable_root(tmp_path: Path) -> None:
+    """The real-vault mode does not serve a root that the process can write to.
+
+    The root holds the sample notes, so only the writability check can stop
+    this launch.
+    """
+    root = tmp_path / "invented"
+    shutil.copytree(FIXTURES, root)
+    configuration = tmp_path / "config.toml"
+    configuration.write_text(_config_text(root, "vault"), encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "knowledge_server.adapter.http_main",
+            "--config",
+            str(configuration),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr == "knowledge-server-http startup category=writable-root\n"
+
+
+def _gate(
+    config: HTTPConfig,
+    signing_keys: tuple[Any, Any],
+    downstream: ASGIApp,
+    **bounds: Any,
+) -> HTTPApplication:
+    return HTTPApplication(
+        downstream,
+        config,
+        AssertionVerifier(config, _keys(config, signing_keys)),
+        **bounds,
+    )
+
+
+async def _exchange(
+    app: HTTPApplication,
+    headers: list[tuple[bytes, bytes]],
+    receive: Receive,
+) -> list[Message]:
+    messages: list[Message] = []
+    scope: Scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/mcp",
+        "raw_path": b"/mcp",
+        "query_string": b"",
+        "headers": headers,
+        "client": ("127.0.0.1", 1234),
+        "server": ("127.0.0.1", 8000),
+    }
+
+    async def send(message: Message) -> None:
+        messages.append(message)
+
+    await app(scope, receive, send)
+    return messages
+
+
+def _authorized(config: HTTPConfig, signing_keys: tuple[Any, Any]) -> list[Any]:
+    return [
+        (b"host", b"mcp.example.com"),
+        (b"cf-access-jwt-assertion", _token(signing_keys[0], config).encode()),
+    ]
+
+
+def _chunks(*parts: bytes) -> Receive:
+    """Deliver body parts in order, then wait as a connected client does."""
+    pending = list(parts)
+
+    async def receive() -> Message:
+        if pending:
+            body = pending.pop(0)
+            return {"type": "http.request", "body": body, "more_body": bool(pending)}
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    return receive
+
+
+async def _echo(scope: Scope, receive: Receive, send: Send) -> None:
+    body = bytearray()
+    while True:
+        message = await receive()
+        body.extend(message.get("body", b""))
+        if not message.get("more_body", False):
+            break
+    await send({"type": "http.response.start", "status": 200, "headers": []})
+    await send({"type": "http.response.body", "body": bytes(body)})
+
+
+@pytest.mark.parametrize(
+    "parts,status",
+    [
+        ((b"a" * 6, b"b" * 4), 200),
+        ((b"a" * 6, b"b" * 5), 413),
+        ((b"a" * 11,), 413),
+        ((b"",), 200),
+    ],
+)
+def test_body_bytes_are_counted_as_they_arrive(
+    config: HTTPConfig,
+    signing_keys: tuple[Any, Any],
+    parts: tuple[bytes, ...],
+    status: int,
+) -> None:
+    """A body over the limit is refused before the application sees it.
+
+    A small `Content-Length` does not change the count, and a body within the
+    limit reaches the application complete.
+    """
+    calls: list[bytes] = []
+
+    async def downstream(scope: Scope, receive: Receive, send: Send) -> None:
+        calls.append(b"called")
+        await _echo(scope, receive, send)
+
+    app = _gate(config, signing_keys, downstream, max_body=10)
+    headers = _authorized(config, signing_keys) + [(b"content-length", b"1")]
+    messages = _run(_exchange(app, headers, _chunks(*parts)))
+    assert messages[0]["status"] == status
+    assert (b"cache-control", b"no-store") in messages[0]["headers"]
+    if status == 200:
+        assert messages[1]["body"] == b"".join(parts)
+    else:
+        assert calls == []
+        assert messages[1]["body"] == b"Request rejected."
+
+
+@pytest.mark.parametrize("case,status", [("stalled", 408), ("disconnect", 400)])
+def test_incomplete_body_is_refused(
+    config: HTTPConfig, signing_keys: tuple[Any, Any], case: str, status: int
+) -> None:
+    """A stalled body times out with 408; a disconnected client gets 400."""
+
+    async def downstream(scope: Scope, receive: Receive, send: Send) -> None:
+        raise AssertionError("An incomplete body must not dispatch")
+
+    sent = [False]
+
+    async def receive() -> Message:
+        if not sent[0]:
+            sent[0] = True
+            return {"type": "http.request", "body": b"{", "more_body": True}
+        if case == "disconnect":
+            return {"type": "http.disconnect"}
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    app = _gate(config, signing_keys, downstream, body_timeout=0.05)
+    messages = _run(_exchange(app, _authorized(config, signing_keys), receive))
+    assert messages[0]["status"] == status
+
+
+def test_trickling_body_meets_a_total_deadline(
+    config: HTTPConfig, signing_keys: tuple[Any, Any]
+) -> None:
+    """A body that keeps arriving within the size limit still times out.
+
+    Each chunk arrives well within the deadline, but the whole body does not.
+    """
+    calls: list[None] = []
+
+    async def downstream(scope: Scope, receive: Receive, send: Send) -> None:
+        calls.append(None)
+
+    async def receive() -> Message:
+        await asyncio.sleep(0.01)
+        return {"type": "http.request", "body": b"x", "more_body": True}
+
+    app = _gate(config, signing_keys, downstream, body_timeout=0.1)
+    messages = _run(_exchange(app, _authorized(config, signing_keys), receive))
+    assert messages[0]["status"] == 408
+    assert (b"cache-control", b"no-store") in messages[0]["headers"]
+    assert calls == []
+
+
+def test_cancelled_request_frees_its_place(
+    config: HTTPConfig, signing_keys: tuple[Any, Any]
+) -> None:
+    """A request cancelled while it holds the only place gives it back."""
+    entered = asyncio.Event()
+    calls: list[None] = []
+
+    async def downstream(scope: Scope, receive: Receive, send: Send) -> None:
+        calls.append(None)
+        if len(calls) == 1:
+            entered.set()
+            await asyncio.Event().wait()
+        await _echo(scope, receive, send)
+
+    async def check() -> None:
+        app = _gate(config, signing_keys, downstream, max_requests=1)
+        authorized = _authorized(config, signing_keys)
+        held = asyncio.create_task(_exchange(app, authorized, _chunks(b"{}")))
+        await entered.wait()
+        held.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await held
+        after = await _exchange(app, authorized, _chunks(b"{}"))
+        assert after[0]["status"] == 200
+
+    _run(check())
+
+
+def test_unauthorized_bodies_are_not_read(
+    config: HTTPConfig, signing_keys: tuple[Any, Any]
+) -> None:
+    """A rejected request is answered without reading its body."""
+
+    async def downstream(scope: Scope, receive: Receive, send: Send) -> None:
+        raise AssertionError("Rejected requests must not dispatch")
+
+    async def receive() -> Message:
+        raise AssertionError("Rejected requests must not read their body")
+
+    app = _gate(config, signing_keys, downstream)
+    messages = _run(_exchange(app, [(b"host", b"mcp.example.com")], receive))
+    assert messages[0]["status"] == 401
+
+
+def test_concurrent_authorized_requests_are_bounded(
+    config: HTTPConfig, signing_keys: tuple[Any, Any]
+) -> None:
+    """Requests over the bound get 503 at once; places free up after each one.
+
+    Unauthorized requests neither take a place nor receive 503.
+    """
+    release = asyncio.Event()
+    entered: list[None] = []
+
+    async def downstream(scope: Scope, receive: Receive, send: Send) -> None:
+        entered.append(None)
+        await release.wait()
+        await _echo(scope, receive, send)
+
+    async def check() -> None:
+        app = _gate(config, signing_keys, downstream, max_requests=2)
+        authorized = _authorized(config, signing_keys)
+        held = [
+            asyncio.create_task(_exchange(app, authorized, _chunks(b"{}")))
+            for _ in range(2)
+        ]
+        while len(entered) < 2:
+            await asyncio.sleep(0)
+        busy = await _exchange(app, authorized, _chunks(b"{}"))
+        assert busy[0]["status"] == 503
+        assert (b"cache-control", b"no-store") in busy[0]["headers"]
+        denied = await _exchange(app, [(b"host", b"mcp.example.com")], _chunks())
+        assert denied[0]["status"] == 401
+        release.set()
+        for task in held:
+            assert (await task)[0]["status"] == 200
+        after = await _exchange(app, authorized, _chunks(b"{}"))
+        assert after[0]["status"] == 200
+
+    _run(check())
+
+
+def test_failed_application_frees_its_place(
+    config: HTTPConfig, signing_keys: tuple[Any, Any]
+) -> None:
+    """A request that fails with 500 does not keep its place."""
+
+    async def downstream(scope: Scope, receive: Receive, send: Send) -> None:
+        raise RuntimeError(SENTINEL)
+
+    async def check() -> None:
+        app = _gate(config, signing_keys, downstream, max_requests=1)
+        for _ in range(3):
+            messages = await _exchange(
+                app, _authorized(config, signing_keys), _chunks(b"{}")
+            )
+            assert messages[0]["status"] == 500
+
+    _run(check())
+
+
+def _events(output: str) -> list[str]:
+    return [
+        line.removeprefix("knowledge-server-http event category=")
+        for line in output.splitlines()
+        if line.startswith("knowledge-server-http event ")
+    ]
+
+
+def test_key_and_assertion_events(
+    config: HTTPConfig, signing_keys: tuple[Any, Any], http_logs: io.StringIO
+) -> None:
+    """Key and assertion failures log fixed categories before the request line.
+
+    A probe without an assertion logs no event, and no event contains the
+    failure's details.
+    """
+
+    async def failing(url: str) -> dict[str, Any]:
+        raise RuntimeError(SENTINEL)
+
+    async def downstream(scope: Scope, receive: Receive, send: Send) -> None:
+        raise AssertionError("Rejected requests must not dispatch")
+
+    def gate(fetch: Any) -> HTTPApplication:
+        return HTTPApplication(
+            downstream,
+            config,
+            AssertionVerifier(config, CachedKeys(config, fetch=fetch)),
+        )
+
+    token = _token(signing_keys[0], config)
+    headers = [
+        (b"host", b"mcp.example.com"),
+        (b"cf-access-jwt-assertion", token.encode()),
+    ]
+    other = _token(signing_keys[0], config, {"sub": SENTINEL})
+    rejected = [headers[0], (b"cf-access-jwt-assertion", other.encode())]
+    for app, request_headers in (
+        (gate(failing), [(b"host", b"mcp.example.com")]),
+        (gate(failing), headers),
+        (gate(_keys(config, signing_keys).fetch), rejected),
+    ):
+        assert _run(_request(app, request_headers))[0]["status"] == 401
+    output = http_logs.getvalue()
+    request = "knowledge-server-http request method=POST status=401"
+    assert [line.split(" latency_ms=")[0] for line in output.splitlines()] == [
+        request,
+        "knowledge-server-http event category=key-fetch-failed",
+        "knowledge-server-http event category=assertion-rejected",
+        request,
+        "knowledge-server-http event category=assertion-rejected",
+        request,
+    ]
+    for private in (SENTINEL, token, other, config.owner_subject, "Traceback"):
+        assert private not in output
+
+
+def test_tool_failure_event(
+    config: HTTPConfig,
+    signing_keys: tuple[Any, Any],
+    tmp_path: Path,
+    http_logs: io.StringIO,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unexpected tool exception logs only `tool-failed`.
+
+    The client receives an `INTERNAL_ERROR` tool error inside HTTP 200.
+    """
+    import knowledge_server.adapter.server as tools
+
+    def broken(*args: Any) -> None:
+        raise RuntimeError(SENTINEL)
+
+    monkeypatch.setattr(tools, "read_note", broken)
+    root = tmp_path / "vault"
+    root.mkdir()
+    (root / "note.md").write_text("# Note\n", encoding="utf-8")
+    app = create_http_app(
+        PathPolicy(root),
+        config,
+        ripgrep=RG,
+        key_fetch=_keys(config, signing_keys).fetch,
+    )
+
+    async def check() -> dict[str, Any]:
+        async with (
+            _lifespan(app),
+            httpx2.AsyncClient(
+                transport=httpx2.ASGITransport(app=app),
+                base_url="http://127.0.0.1:8000",
+                headers={
+                    "host": "mcp.example.com",
+                    "cf-access-jwt-assertion": _token(signing_keys[0], config),
+                    "accept": "application/json, text/event-stream",
+                },
+            ) as client,
+        ):
+            response = await client.post(
+                "/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "knowledge_read",
+                        "arguments": {"path": "note.md"},
+                    },
+                },
+            )
+            assert response.status_code == 200
+            return response.json()["result"]
+
+    result = CallToolResult.model_validate(_run(check()))
+    assert result.is_error
+    content = result.content[0]
+    assert isinstance(content, TextContent)
+    assert json.loads(content.text)["code"] == "INTERNAL_ERROR"
+    output = http_logs.getvalue()
+    assert _events(output) == ["tool-failed"]
+    for private in (SENTINEL, "knowledge_read", "RuntimeError", "server.py", "note.md"):
+        assert private not in output

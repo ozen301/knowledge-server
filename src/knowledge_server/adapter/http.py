@@ -3,9 +3,12 @@
 The MCP SDK's Streamable HTTP transport handles MCP at `/mcp`. Before it sees
 a request, the gate checks the `Host` and `Origin` headers and the Cloudflare
 Access assertion: a signed JSON Web Token (JWT) that Cloudflare Access adds
-in the `Cf-Access-Jwt-Assertion` header to each request it lets through.
+in the `Cf-Access-Jwt-Assertion` header to each request it lets through. It
+then bounds the number of authorized requests in progress and reads each
+request body within a size and time limit.
 """
 
+import asyncio
 import logging
 import time
 
@@ -15,9 +18,13 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from knowledge_server.adapter.http_auth import AssertionVerifier, CachedKeys, KeyFetch
 from knowledge_server.adapter.http_config import HTTPConfig
-from knowledge_server.adapter.http_logging import REQUEST_FORMAT
+from knowledge_server.adapter.http_logging import EVENT_FORMAT, REQUEST_FORMAT
 from knowledge_server.adapter.server import create_server
 from knowledge_server.core.paths import PathPolicy
+
+MAX_BODY_BYTES = 1024 * 1024
+BODY_TIMEOUT = 10.0
+MAX_REQUESTS = 8
 
 _logger = logging.getLogger("knowledge_server.http")
 _METHODS = {
@@ -38,12 +45,19 @@ class HTTPApplication:
 
     A request passes only with an allowed `Host`, an allowed or absent
     `Origin`, and one valid Cloudflare Access assertion for the configured
-    owner. Every path and method is checked.
+    owner. Every path and method is checked. An authorized request then
+    needs a free place among `max_requests` and a complete body of at most
+    `max_body` bytes, received within `body_timeout` seconds; the wrapped
+    application receives that body in one message.
 
     Attributes:
         app: The wrapped ASGI application, which also receives lifespan events.
         config: The allowed Host and Origin values and the owner settings.
         verifier: Checks the assertion; any error counts as a rejection.
+        max_body: The largest accepted request body, in bytes.
+        body_timeout: Seconds allowed for receiving the whole body.
+        max_requests: The number of authorized requests that may be in
+            progress at once.
     """
 
     def __init__(
@@ -51,28 +65,40 @@ class HTTPApplication:
         app: ASGIApp,
         config: HTTPConfig,
         verifier: AssertionVerifier,
+        *,
+        max_body: int = MAX_BODY_BYTES,
+        body_timeout: float = BODY_TIMEOUT,
+        max_requests: int = MAX_REQUESTS,
     ) -> None:
-        """Wrap an application with whole-request authorization.
+        """Wrap an application with whole-request authorization and bounds.
 
         Args:
             app: The downstream ASGI callable.
             config: Validated HTTP settings.
             verifier: The trusted owner assertion verifier.
+            max_body: The body size limit; tests use a small value.
+            body_timeout: The body deadline; tests use a short value.
+            max_requests: The concurrency bound; tests use a small value.
         """
         self.app = app
         self.config = config
         self.verifier = verifier
+        self.max_body = max_body
+        self.body_timeout = body_timeout
+        self.max_requests = max_requests
+        self._active = 0
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Handle one ASGI connection.
 
         Lifespan events, the server's startup and shutdown messages, go to the
         wrapped application unchanged. Other non-HTTP connections, such as
-        WebSocket, are closed. An HTTP request that fails a check receives a
-        fixed rejection. If the wrapped application raises before it responds,
-        the request receives a fixed 500 response. Every response sent through
-        this method carries `Cache-Control: no-store`, which asks caches not to
-        store it. Each request logs only its method, status, and latency.
+        WebSocket, are closed. An HTTP request that fails a check or a bound
+        receives a fixed rejection. If the wrapped application raises before
+        it responds, the request receives a fixed 500 response. Every
+        response sent through this method carries `Cache-Control: no-store`,
+        which asks caches not to store it. Each request logs only its method,
+        status, and latency.
 
         Args:
             scope: The ASGI connection metadata.
@@ -107,18 +133,21 @@ class HTTPApplication:
 
         try:
             rejection = await self._check(scope)
+            if rejection is None and self._active >= self.max_requests:
+                rejection = 503
             if rejection is not None:
                 await Response("Request rejected.", status_code=rejection)(
                     scope, receive, no_store
                 )
             else:
-                # Lowercase Host because the SDK's own Host check is case-sensitive.
-                safe_scope = dict(scope)
-                safe_scope["headers"] = [
-                    (name, value.lower() if name.lower() == b"host" else value)
-                    for name, value in scope.get("headers", [])
-                ]
-                await self.app(safe_scope, receive, no_store)
+                # No await separates the check above from this increment, so
+                # concurrent requests on the event loop cannot both take the
+                # last place.
+                self._active += 1
+                try:
+                    await self._forward(scope, receive, no_store)
+                finally:
+                    self._active -= 1
         except Exception:  # noqa: BLE001
             if not started:
                 await Response("Request failed.", status_code=500)(
@@ -133,6 +162,53 @@ class HTTPApplication:
                 (time.monotonic() - began) * 1000,
             )
 
+    async def _forward(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Read the bounded body, then pass the request to the wrapped app.
+
+        The body is read before the wrapped application starts, so it never
+        buffers more than `max_body` bytes. After the body, `receive` passes
+        the client's later messages, such as a disconnect, through.
+        """
+        body = bytearray()
+        try:
+            async with asyncio.timeout(self.body_timeout):
+                while True:
+                    message = await receive()
+                    if message["type"] != "http.request":
+                        rejection = 400
+                        break
+                    chunk = message.get("body", b"")
+                    if len(body) + len(chunk) > self.max_body:
+                        rejection = 413
+                        break
+                    body.extend(chunk)
+                    if not message.get("more_body", False):
+                        rejection = None
+                        break
+        except TimeoutError:
+            rejection = 408
+        if rejection is not None:
+            await Response("Request rejected.", status_code=rejection)(
+                scope, receive, send
+            )
+            return
+        replayed = False
+
+        async def replay() -> Message:
+            nonlocal replayed
+            if replayed:
+                return await receive()
+            replayed = True
+            return {"type": "http.request", "body": bytes(body), "more_body": False}
+
+        # Lowercase Host because the SDK's own Host check is case-sensitive.
+        safe_scope = dict(scope)
+        safe_scope["headers"] = [
+            (name, value.lower() if name.lower() == b"host" else value)
+            for name, value in scope.get("headers", [])
+        ]
+        await self.app(safe_scope, replay, send)
+
     async def _check(self, scope: Scope) -> int | None:
         """Return a rejection status, or None if the request may proceed.
 
@@ -146,7 +222,8 @@ class HTTPApplication:
             421 unless there is exactly one allowed `Host`, compared without
             regard to case; 403 if `Origin` is present but repeated or not
             allowed; 401 unless there is exactly one valid assertion;
-            otherwise None. An absent `Origin` passes its check.
+            otherwise None. An absent `Origin` passes its check. A present
+            but invalid single assertion logs the `assertion-rejected` event.
         """
         headers = scope.get("headers", [])
         hosts = [value for name, value in headers if name.lower() == b"host"]
@@ -166,9 +243,10 @@ class HTTPApplication:
             for name, value in headers
             if name.lower() == b"cf-access-jwt-assertion"
         ]
-        if len(assertions) != 1 or not await self.verifier.authorize(
-            assertions[0].decode("latin-1")
-        ):
+        if len(assertions) != 1:
+            return 401
+        if not await self.verifier.authorize(assertions[0].decode("latin-1")):
+            _logger.warning(EVENT_FORMAT, "assertion-rejected")
             return 401
         return None
 

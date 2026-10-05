@@ -1,0 +1,11 @@
+# Private knowledge-server-http configuration. Copy it outside the repository,
+# replace every placeholder, and keep it readable only by its owner or the
+# service account. docs/web-access.md#launch-configuration defines each field.
+mode = "synthetic"
+root = "/absolute/path/to/invented-notes"
+team_domain = "example.cloudflareaccess.com"
+audience = "<application-aud>"
+owner_subject = "<verified-owner-sub>"
+public_host = "mcp.example.com"
+port = 8000
+allowed_origins = []

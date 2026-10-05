@@ -11,15 +11,16 @@ read-only MCP tools over stdio to a local MCP host: `knowledge_search`,
 `knowledge_read`, `knowledge_list`, and `knowledge_info`. It has been checked
 with Claude Code and Codex CLI.
 
-`knowledge-server-http` serves the same tools over HTTP on loopback, with the
-invented sample notes only. It accepts only requests that carry a valid
-Cloudflare Access assertion for the pinned vault owner. Through Cloudflare
-Access Managed OAuth and Tunnel, ChatGPT has used it to answer questions
-about the sample notes and cite the source note and line. Real-vault HTTP
-support and permanent deployment are not implemented yet. The [usage
-guide](docs/usage.md#prepare-the-synthetic-http-trial) describes the
-launcher, and the [implementation tasks](docs/implementation-tasks.md) track
-progress and record the trial evidence.
+`knowledge-server-http` serves the same tools over HTTP on loopback. It
+accepts only requests that carry a valid Cloudflare Access assertion for the
+pinned vault owner. Through Cloudflare Access Managed OAuth and Tunnel,
+ChatGPT has used it to answer questions about the sample notes and cite the
+source note and line. It has a synthetic mode and an explicit real-vault
+mode, and `deploy/` holds a systemd unit for the VM; real notes are not
+served until the vault owner authorizes a scope. The [usage
+guide](docs/usage.md) describes the launcher and the service runbook, and
+the [implementation tasks](docs/implementation-tasks.md) track progress and
+record the trial evidence.
 
 ## Quick start
 
@@ -88,7 +89,7 @@ GitHub Actions runs `scripts/check --ci` automatically only on pushes to
 - [Architecture overview](docs/architecture.md): what the components do and
   how they work together.
 - [Usage guide](docs/usage.md): host registration, the synthetic HTTP trial,
-  behavior, limits, and data disclosure.
+  the VM service runbook, behavior, limits, and data disclosure.
 - [Repository guide](AGENTS.md): development workflow and writing conventions.
 - [Implementation plan](docs/implementation-plan.md): architecture, decisions,
   and milestones.

@@ -1,8 +1,8 @@
 # Implementation tasks
 
 Run these sequentially. Tasks 1–7 are complete; their entries below keep
-what exists, validation evidence, and what later tasks need. Task 8 is next
-(permanent VM services and the real-vault mode), followed by Task 9
+what exists, validation evidence, and what later tasks need. Task 8 is in
+progress (permanent VM services and the real-vault mode), followed by Task 9
 (deployment and real-vault activation), as the [web access
 plan](web-access.md) specifies. Task 9 reaches the planned completion point.
 Later work, starting with [NFC-equivalent
@@ -169,7 +169,7 @@ are not passed checks:
 
 ### Handoff
 
-Task 8 sets the forwarded Host explicitly in the service configuration,
+Task 8 sets the forwarded Host explicitly in the tunnel configuration,
 checks it against the gate offline, and reviews the edge cache configuration;
 Task 9 step 1 repeats the live probes on the target runtime. Live signing-key
 rotation is not exercised; record it as unobserved unless it is seen in use.
@@ -182,13 +182,23 @@ follow-up.
 
 ## Task 8 — Prepare the HTTP service for permanent use in the VM
 
-Depends on: Task 7 (complete). Status: not started.
+Depends on: Task 7 (complete). Status: implemented and validated offline on
+2026-10-05. The local service checks below and the vault owner's
+confirmation that no Cache Rule or Page Rule covers the MCP hostname are
+pending.
+
+What exists: the `vault` launch mode and the request bounds and diagnostic
+events in `src/knowledge_server/adapter/http*.py`, specified in the [HTTP
+contract](web-access.md#local-http-implementation-contract); the server's
+systemd unit and an example configuration in `deploy/`, described in [runtime
+isolation](web-access.md#runtime-isolation); and the [service
+runbook](usage.md#run-the-http-service-in-the-vm). `scripts/check` passed formatting, lint, type, and whitespace checks and all
+494 tests, 113 of them for HTTP.
 
 Prepare the HTTP entry point for permanent use, as the [web access
 plan](web-access.md#runtime-isolation) describes. Add only the items below.
 Choose exact values during implementation and record the reasons. Keep the
-existing assertion, path, key-cache, and logging protections. Until this task
-is implemented, the launcher serves the invented notes only.
+existing assertion, path, key-cache, and logging protections.
 
 - **Request bounds.** Count request-body bytes as they arrive and reject a
   body over a fixed limit before the SDK buffers it; a `Content-Length` check
@@ -221,17 +231,21 @@ is implemented, the launcher serves the invented notes only.
   the dedicated checkout outside the server. Both cloudflared and the origin
   need outbound access: cloudflared for the tunnel, and the origin to fetch
   signing keys. This task needs no containers or Unraid-specific deployment.
+- **Synchronization.** Decided on 2026-10-05: a cron job of the vault
+  owner's account fast-forwards the dedicated checkout from the NAS-hosted
+  vault remote every 15 minutes. The vault owner enables it for the real
+  vault; local checks use a Git repository of invented notes only.
 - **Root and scope.** Configure the root explicitly: the whole checkout or
   one subtree, with read-only access for the server. Citations are relative
   to that root. A selection spread across several directories needs its own
   design before dependent work. The exact scope is decided before activation
   in Task 9; preparing the services does not need it. Because the root can be a
-  subtree, update the local vault checkout entry in the
-  [glossary](../CONTEXT.md) and the root description in the [Phase 1
-  contract](phase-1-contract.md#configuration-and-common-policy), which now
-  equate the root with the whole checkout.
+  subtree, update the [glossary](../CONTEXT.md) and the root description in
+  the [Phase 1
+  contract](phase-1-contract.md#configuration-and-common-policy), which
+  equated the root with the whole checkout.
 - **Forwarded Host.** Set the Host that cloudflared forwards explicitly in the
-  service configuration, and check that the gate accepts it, reusing the
+  tunnel configuration, and check that the gate accepts it, reusing the
   existing Host tests rather than adding another set of cases.
 - **Edge cache.** Review the Cloudflare cache configuration for Uvicorn's own
   400 and 500 responses, which the application's `no-store` guarantee does
@@ -269,7 +283,7 @@ Acceptance:
 - The service checks above pass: the server cannot write to the exposed
   notes, the origin listens only on loopback, and restart works without
   corrupting data or requiring a new index.
-- The service configuration states the forwarded Host, a test shows that the
+- The tunnel configuration states the forwarded Host, a test shows that the
   gate accepts it, and the edge cache review is recorded.
 - The launch and deployment configuration, synthetic verification evidence,
   and runbook, including rollback, are ready before the deployment approval

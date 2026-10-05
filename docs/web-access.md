@@ -1,12 +1,13 @@
 # Web access plan
 
 Status: agreed design, decided 2026-10-02; local HTTP contract updated
-2026-10-04; live-trial findings recorded and planned runtime updated
-2026-10-05. The protected loopback HTTP entry point and its synthetic-only
-launcher are implemented beside stdio, and the synthetic ChatGPT trial
-through this route succeeded. The real-vault mode, the request bounds, and
-the permanent VM services described in [runtime isolation](#runtime-isolation)
-are planned for Task 8 and not implemented. The [implementation
+2026-10-04; live-trial findings recorded 2026-10-05; Task 8 runtime contract
+added 2026-10-05. The protected loopback HTTP entry point is implemented
+beside stdio, with a synthetic mode and an explicit real-vault mode, request
+bounds, and content-free diagnostics. The synthetic ChatGPT trial through
+this route succeeded. The [VM services](#runtime-isolation) are prepared in
+`deploy/` but not yet deployed, and no real notes are exposed until Task 9
+authorizes a scope. The [implementation
 plan](implementation-plan.md#web-access-route) explains why this route was
 chosen, and [Tasks 7–9](implementation-tasks.md) track its progress.
 
@@ -229,20 +230,21 @@ authentication architecture is reconsidered.
 
 ## Local HTTP implementation contract
 
-The Task 7 implementation follows this contract, and `tests/test_http.py`
-checks it offline. The [usage
-guide](usage.md#prepare-the-synthetic-http-trial) gives the launch procedure.
+The implementation follows this contract, and `tests/test_http.py` checks it
+offline. The [usage guide](usage.md#prepare-the-synthetic-http-trial) gives
+the launch procedure, and its [service
+runbook](usage.md#run-the-http-service-in-the-vm) the permanent setup.
 
 ### Launch configuration
 
-`knowledge-server-http --config /absolute/private/trial.toml` reads one
+`knowledge-server-http --config /absolute/private/config.toml` reads one
 explicit TOML file, given by absolute path, of at most 16 KiB. It ignores
 `KNOWLEDGE_ROOT`, proxy environment variables, and `.env` files.
 
 | Field | Default | Rule |
 |---|---|---|
-| `mode` | required | Must be `"synthetic"`; no other mode exists. |
-| `root` | required | Absolute path to an existing readable directory: the dedicated trial directory. |
+| `mode` | required | `"synthetic"` or `"vault"`; see [launch modes](#launch-modes). |
+| `root` | required | Absolute path to an existing readable directory: the directory the tools expose. |
 | `team_domain` | required | `<team>.cloudflareaccess.com`, in lowercase, without a scheme. |
 | `audience` | required | The Access application's AUD tag. |
 | `owner_subject` | required | The privately verified owner `sub` value. |
@@ -258,6 +260,21 @@ start or end with whitespace, and must not contain spaces, ASCII control
 characters, or DEL. An unknown field or a missing or invalid value stops
 startup with a fixed diagnostic.
 
+### Launch modes
+
+`mode` has no default, and no other field or environment value selects a
+mode. Both modes serve the same tools under the same gate, bounds, and
+logging; they differ only in the startup check of `root`.
+
+- **`synthetic`**: the root must pass the [synthetic trial
+  guard](#synthetic-trial-guard). Use it for trials and service checks with
+  the invented notes.
+- **`vault`**: the real-vault mode, for the [exposed scope](#exposed-scope).
+  Startup fails with `writable-root` if the process can write to the root
+  directory, which stops a launch outside the read-only service unit. Only
+  this mode may serve real notes; Task 9 enables it for an authorized scope,
+  and no copy-ready example enables it.
+
 ### Synthetic trial guard
 
 Before serving, the launcher compares the root with
@@ -272,10 +289,7 @@ directory afterwards. Keep the trial directory dedicated to the invented
 notes for as long as it is in use.
 
 The generic HTTP application receives an explicit path policy and knows no
-fixture location or environment root. There is no real-vault launch mode yet.
-Task 8 specifies and tests one with invented notes and keeps this guard for
-the synthetic mode. Only explicit configuration selecting the real-vault mode,
-used in Task 9 for an authorized scope, may activate real notes.
+fixture location or environment root.
 
 ### Listener and request gate
 
@@ -296,6 +310,13 @@ order. Nothing reaches the SDK until all checks pass.
    `allowed_origins`. An empty value is rejected. Otherwise: 403.
 3. Exactly one `Cf-Access-Jwt-Assertion` header that passes [assertion
    validation](#assertion-validation). Otherwise: 401.
+4. Fewer than 8 authorized requests already in progress. Otherwise: 503,
+   at once and without queuing.
+5. A request body of at most 1 MiB, received completely within 10 seconds.
+   The gate counts the bytes as they arrive and stops reading at the limit;
+   it does not trust `Content-Length`. Over the limit: 413. Too slow: 408.
+   If the client disconnects first, the gate records 400 and the client
+   receives nothing.
 
 Only a request that passes the Host and Origin checks and has exactly one
 assertion header can cause a key fetch. The gate passes Host to the SDK in
@@ -304,6 +325,22 @@ transport-security checks. Non-HTTP connections, such as WebSocket, are
 closed. Rejection and error bodies are fixed text. After authorization,
 unknown paths, including OAuth discovery paths, return 404; discovery stays
 at the edge.
+
+Only authorized requests take one of the 8 places and have their body read,
+so unauthenticated requests cannot take capacity from the vault owner. The
+SDK receives the complete body and never buffers more than the limit. The
+bounds cannot stop a filesystem call that a worker thread has already
+started: the [Phase 1 limits](phase-1-contract.md#initial-limits) bound that
+work, and search keeps its own deadline. Rate limiting is deferred until a
+need is demonstrated.
+
+Reasons for the values: a valid tool request is a few KiB, because queries
+have at most 512 code points, and 1 MiB leaves room for client metadata that
+the contract does not control. cloudflared forwards a body over loopback in
+milliseconds, so 10 seconds tolerates a slow edge and still frees a stalled
+request's place. One vault owner rarely has more than a few tool calls in
+progress, and 8 keeps the worker threads and ripgrep processes of slow
+searches within a small VM's capacity.
 
 Every HTTP response that the ASGI application produces, including
 rejections, errors, and 404s, carries `Cache-Control: no-store`, which
@@ -362,23 +399,48 @@ keys or network services.
 
 ### Logging
 
-The HTTP process writes only two kinds of lines to stderr: a fixed startup
-category, and one line per request.
+The HTTP process writes only three kinds of lines to stderr: a startup
+category, a diagnostic event category, and one line per request.
 
 ```text
 knowledge-server-http startup category=<category>
+knowledge-server-http event category=<category>
 knowledge-server-http request method=<method> status=<status> latency_ms=<milliseconds>
 ```
 
-Methods outside the standard HTTP set are recorded as `OTHER`. One filtered
-handler replaces the process's log handlers and drops every other record,
-including SDK, HTTPX2, Uvicorn, and tool adapter diagnostics, exception text,
-and tracebacks. Uvicorn access logs are disabled. Logs therefore omit tokens,
-raw headers, claims, identity values or hashes, IP addresses, paths, query
-strings, request bodies, tool arguments including queries, results, and note
-content. Stdio keeps its own logging setup. Sentinel tests check these
-restrictions. Task 8 adds fixed diagnostic categories under the same
-restrictions, as [diagnostics and health](#diagnostics-and-health) describes.
+Startup categories, each followed by exit status 1:
+
+| Category | Cause |
+|---|---|
+| `configuration` | `--config` is missing, the file is unreadable or invalid, or the root fails the synthetic guard. |
+| `writable-root` | In `vault` mode, the process can write to the root directory. |
+| `missing-ripgrep` | `rg` is not on `PATH`. |
+| `runtime` | The server could not start, for example because the port is in use, or it failed unexpectedly. |
+
+Event categories, each written before the line of the request it concerns:
+
+| Category | Meaning | Client result |
+|---|---|---|
+| `key-fetch-failed` | A signing-key refresh failed: the fetch failed or timed out, or the key set was invalid. | 401 |
+| `assertion-rejected` | The single assertion header failed validation, for any reason, including a failed key refresh. | 401 |
+| `tool-failed` | A tool raised an unexpected exception. | HTTP 200 with an `INTERNAL_ERROR` tool error |
+
+A request without an assertion header, such as a local probe, receives 401
+without an event. The request bounds need no events, because their statuses
+(503, 413, 408) appear in the request line. Methods outside the standard HTTP
+set are recorded as `OTHER`.
+
+One filtered handler replaces the process's log handlers and drops every
+other record, including SDK, HTTPX2, Uvicorn, and other tool adapter
+diagnostics, exception text, and tracebacks. The tool adapter's
+unexpected-failure record becomes the `tool-failed` event without its tool
+name, exception type, or location. Uvicorn access logs are disabled. Logs
+therefore omit tokens, raw headers, claims, identity values or hashes, IP
+addresses, paths, query strings, request bodies, tool arguments including
+queries, results, note content, and exception messages. Stdio keeps its own
+logging setup. Sentinel tests check these restrictions. Under systemd, the
+journal stores the stderr lines; no separate health-monitoring system is
+required.
 
 ## Shutdown and revocation
 
@@ -408,8 +470,7 @@ they expire.
 
 ## Runtime isolation
 
-Status: planned for Task 8 and not implemented. The current launcher serves
-the invented notes only.
+Status: prepared in Task 8, not yet deployed.
 
 The service has one user, the vault owner, who maintains it by hand;
 availability is best effort. These assumptions keep the runtime simple. They
@@ -417,21 +478,31 @@ do not relax the assertion, path, key-cache, or logging protections above.
 
 ### VM services and network
 
-The server and cloudflared run as ordinary services in the same Ubuntu VM,
-communicating over loopback. The origin listens only on `127.0.0.1`. Use the
-VM's service manager for startup at boot, stop, and restart. No containers or
-Unraid-specific deployment configuration are needed.
+The server and cloudflared run as systemd services in the same Ubuntu VM,
+communicating over loopback; the [service
+runbook](usage.md#run-the-http-service-in-the-vm) installs and operates them.
+No containers or Unraid-specific deployment configuration are needed.
 
-The server runs as a non-root service account without write permission to the
-exposed notes. Configuration and secrets stay outside Git. A dedicated local
-vault checkout is synchronized outside the MCP process. Choose filesystem
-permissions that let the service read the notes while keeping synchronization
-under the vault owner's control.
-
-Both cloudflared and the origin need outbound access: cloudflared for the
-tunnel, and the origin to fetch signing keys from the [trusted key
-URL](#assertion-and-key-rules). The service configuration sets the Host that
-cloudflared forwards explicitly, to a value that the gate accepts.
+- **Read-only notes.** `deploy/knowledge-server.service` runs the server as
+  the `knowledge-server` system account with `ProtectSystem=strict`, which
+  mounts the whole file system read-only for the process. The server cannot
+  write to the notes even where file permissions would allow it.
+- **Synchronization.** The server never runs Git. A cron job of the vault
+  owner's account fast-forwards a dedicated checkout, so synchronization
+  stays under the vault owner's control.
+- **Forwarded Host.** The dashboard-managed tunnel's route sends requests to
+  `http://127.0.0.1:<port>` with **HTTP Host Header** set to `public_host`,
+  which the gate accepts (`test_allowed_hosts` in `tests/test_http.py`).
+  `127.0.0.1` instead of `localhost` avoids an IPv6 `::1` connection, on
+  which the origin does not listen.
+- **Outbound access.** cloudflared connects to Cloudflare, and the origin
+  fetches signing keys from the [trusted key URL](#assertion-and-key-rules).
+  Neither the unit nor this configuration restricts the network, so both
+  paths stay open; a firewall added later must allow them. Task 9 verifies
+  live key retrieval.
+- **Secrets.** Configuration and secrets stay outside Git: the server's
+  configuration file is readable by root and the service account only, and
+  cloudflared keeps the tunnel token in a root-only file.
 
 ### Exposed scope
 
@@ -440,40 +511,20 @@ subtree, with read-only access for the server; tool paths and citations are
 relative to that root. A selection spread across several directories needs
 its own design before dependent work. The exact scope must be known and
 authorized before activation, but preparing the services does not need it.
-
-Task 8 adds an explicit real-vault launch mode, specified and tested with
-invented notes. Only explicit configuration selects it, and the synthetic mode
-and its [guard](#synthetic-trial-guard) remain.
-
-### Request bounds
-
-The gate counts request-body bytes as they arrive and rejects a body over a
-fixed limit before the SDK buffers it; a `Content-Length` check alone does not
-bound a body. Reading the body has a deadline, and a small global bound limits
-concurrent requests. Task 8 chooses the values and records the reasons. These
-bounds cannot stop a filesystem call that a worker thread has already started:
-the [Phase 1 limits](phase-1-contract.md#initial-limits) bound that work, and
-search keeps its own deadline. Rate limiting is deferred until a need is
-demonstrated.
-
-### Diagnostics and health
-
-The [log policy](#logging) gains fixed, content-free categories. They
-include one for failed signing-key retrieval, after which the gate rejects
-the request with 401, and one for internal tool failures, which the client
-receives as tool errors inside HTTP 200 responses.
-
-A local check expects 401 for an unauthenticated request to `/mcp`. That 401
-shows only that the listener and gate respond; it does not show that key
-retrieval, authorization, or MCP handling work. Document service status and
-restart commands in the runbook. No separate health-monitoring system is
-required.
+The [launch modes](#launch-modes) define how real notes are activated.
 
 ### Edge cache
 
-Task 8 reviews the Cloudflare cache configuration for Uvicorn's own 400 and
-500 responses, which the `no-store` guarantee does not cover. The live
-behavior stays unobserved until Task 9.
+Reviewed on 2026-10-05 against Cloudflare's [default cache
+behavior](https://developers.cloudflare.com/cache/concepts/default-cache-behavior/).
+Without a Cache Rule, Cloudflare caches only `GET` responses for listed
+static file extensions. `/mcp` has no extension, MCP requests use `POST`, and
+statuses other than 200, 206, 301, 302, 303, 404, and 410 are not cached by
+default. Uvicorn's own 400 and 500 responses therefore stay uncached even
+without `Cache-Control: no-store`, unless a Cache Rule or Page Rule such as
+"cache everything" covers the MCP hostname. The vault owner's confirmation
+that no such rule exists is pending. The live behavior stays unobserved until
+Task 9.
 
 ## Contingency
 

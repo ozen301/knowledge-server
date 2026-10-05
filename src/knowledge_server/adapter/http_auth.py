@@ -10,6 +10,7 @@ invalid assertion or a failed key retrieval leads to rejection.
 
 import asyncio
 import json
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -19,6 +20,7 @@ import jwt
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 
 from knowledge_server.adapter.http_config import HTTPConfig
+from knowledge_server.adapter.http_logging import EVENT_FORMAT
 
 FETCH_TIMEOUT = 5.0
 CACHE_TTL = 3600.0
@@ -27,6 +29,8 @@ MAX_KEY_BYTES = 65536
 MAX_KEYS = 16
 MAX_ASSERTION_BYTES = 16384
 CLOCK_SKEW = 30
+
+_logger = logging.getLogger("knowledge_server.http")
 
 # Injecting this boundary lets every test use invented keys without a network.
 KeyFetch = Callable[[str], Awaitable[dict[str, Any]]]
@@ -126,7 +130,8 @@ class CachedKeys:
 
         A fresh cached key is returned at once, even while a refresh runs.
         Refreshes run one at a time. A failed or refused refresh keeps the
-        current keys; a successful one replaces the whole set.
+        current keys; a successful one replaces the whole set. A failed
+        refresh logs the fixed `key-fetch-failed` event and nothing else.
 
         Args:
             kid: An assertion's key ID; it selects a key but cannot change the
@@ -153,6 +158,7 @@ class CachedKeys:
                 keys = _parse_keys(data)
             except Exception:  # noqa: BLE001
                 # Source failures never open the gate or print response data.
+                _logger.warning(EVENT_FORMAT, "key-fetch-failed")
                 return None
             self._keys = keys
             self._expires = self.clock() + CACHE_TTL
