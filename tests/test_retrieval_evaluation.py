@@ -1,4 +1,4 @@
-"""Repeatable checks for the retrieval evaluation in docs/retrieval-evaluation.md.
+"""Repeatable checks for the retrieval questions in docs/sample-notes.md.
 
 Each case repeats a reference query from the question set against the sample
 notes in tests/fixtures/vault/ and checks the matches and the lines that hold

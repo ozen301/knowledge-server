@@ -1,26 +1,21 @@
-# Phase 1 tool contract
+# Tool contract
 
-Status: agreed implementation contract, updated 2026-10-04. The
-[implementation tasks](implementation-tasks.md) track progress. Changes should
+Status: agreed implementation contract, updated 2026-10-05. This document
+specifies the four tools, their limits, and their errors. Changes should
 update this document and the corresponding tests together. The protected
-[HTTP entry point](web-access.md#local-http-implementation-contract) serves
-these tools with the same behavior.
+[HTTP entry point](http-contract.md) serves these tools with the same
+behavior.
 
 ## Configuration and common policy
 
 - The root is the directory the tools expose: the local vault checkout or
-  one subtree of it. For stdio, `KNOWLEDGE_ROOT` is required and names it.
-  The HTTP launcher ignores that variable and takes the root from its private
-  configuration file; in synthetic mode, it also checks that the root holds
-  exactly the invented sample notes ([launch
-  modes](web-access.md#launch-modes)). Either way, the root must be an
-  explicit absolute path to an existing directory that is readable and
-  searchable. It is resolved once on startup, and a root symlink may
-  resolve at that point. The server reads its files directly; it does not
-  require or inspect Git metadata and does not run Git commands. Example
-  value: `/path/to/knowledge-vault`; replace it with a local absolute path.
-  Never default to the process working directory, home directory, or
-  NAS-hosted Git remote.
+  one subtree of it. For stdio, `KNOWLEDGE_ROOT` is required and names it;
+  for HTTP, the [launch configuration](http-contract.md#launch-configuration)
+  does. The root must be an explicit absolute path to an existing directory
+  that is readable and searchable. It is resolved once on startup, and a root
+  symlink may resolve at that point. Never default to the process working
+  directory, home directory, or the vault remote. The server reads files
+  directly; it does not inspect Git metadata or run Git commands.
 - Root visibility is all non-hidden Markdown notes. Tool arguments cannot
   expand access beyond the configured root and common policy.
 - API paths use `/`, relative to the configured root. Empty string means the
@@ -62,7 +57,7 @@ these tools with the same behavior.
   rewrite path-like text authored inside a note.
 - Logs go to stderr and exclude secrets, note contents, and query text,
   including values embedded in exception messages. Stdout carries only protocol
-  output. No telemetry exporter is configured by the application.
+  output.
 
 The shared policy determines path visibility; content/size checks determine
 readability. Listing/info can reveal that a visible file is too large, but
@@ -74,10 +69,10 @@ define the resulting codes and the remaining order of checks.
 
 ## Initial limits
 
-These values are enforced in Phase 1. The [retrieval
-evaluation](retrieval-evaluation.md#limit-review) found no reason to change
-them. Tests may inject smaller limits to exercise boundaries without large or
-slow fixtures.
+These values are enforced. The [retrieval
+questions](sample-notes.md#known-weaknesses) found no reason to change them.
+Tests may inject smaller limits to exercise boundaries without large or slow
+fixtures.
 
 | Setting | Initial value |
 |---|---|
@@ -146,7 +141,7 @@ knowledge_search(
 - Snippet: a window of the matching line around the first match on that
   line, as [defined below](#snippet-window). Paths and line numbers allow a
   full read.
-- Search does not paginate initially: narrow the path or query when truncated.
+- Search does not paginate: narrow the path or query when truncated.
 - Missing/disallowed explicit targets are errors. During recursive search,
   unreadable, invalid-encoding, oversized, or concurrently removed files are
   skipped and counted by reason, without exposing hidden filenames.
@@ -155,9 +150,9 @@ Known limitation: visually identical text can use different Unicode
 representations, such as `é` versus `e` followed by a combining accent, or `が`
 versus `か` followed by a combining voiced mark. These representations can fail
 to match. Half-width and full-width forms also remain distinct. NFC-equivalent
-matching is an important deferred feature described in the [implementation
-plan](implementation-plan.md#deferred-retrieval-decisions); the initial tests
-document these missed matches.
+matching is the first candidate on the
+[roadmap](roadmap.md#nfc-equivalent-matching); the tests document these
+missed matches.
 
 Result shape:
 
@@ -186,18 +181,11 @@ BOM or the line ending, and without whitespace trimming. The first match is
 the first occurrence ripgrep reports on the line. Its start and end are code
 point positions derived from ripgrep's reported byte offsets, not from the
 query length, because a case-insensitive match can differ in length from the
-query. With `L` as the snippet-length limit:
-
-- A line of at most `L` code points is the whole snippet.
-- A match of at most `L` code points is shown whole. The remaining space is
-  split as evenly as possible before and after it; an odd extra code point
-  goes after the match. The window then slides to stay inside the line, so a
-  line longer than `L` always gives a snippet of exactly `L` code points.
-- A match longer than `L` code points gives a snippet of its first `L` code
-  points.
-
-As a formula, for a line longer than `L`, with `start` and `length` measured
-in code points:
+query. With `L` as the snippet-length limit, a line of at most `L` code
+points is the whole snippet. For a longer line, the snippet is exactly `L`
+code points; a match that fits is centered, with an odd extra code point after
+it, and the window slides to stay inside the line. With `start` and `length`
+measured in code points:
 
 ```text
 if length <= L: start = clamp(match_start - (L - length) // 2, 0, len(line) - L)
@@ -224,56 +212,42 @@ entries are rejected when they are checked from the root, so its notes are
 missing from the result without being counted; no name from outside the root
 is exposed.
 
-Search runs in two stages:
+Search loads each candidate note with the reader's bounded loader, which
+opens every path component without following symlinks, and counts skipped
+notes by reason. It then sends the loaded text, in result order, to one
+ripgrep process on standard input, as the reader sees it: without a BOM, with
+CRLF normalized to LF, and with every line ending in LF. ripgrep never opens a
+vault file, so a file changed or replaced after loading cannot affect the
+matches. Its `--max-count` of `max_results + 1` stops the search once the
+result is known to be truncated. ripgrep requirements:
 
-1. **Load.** Discover candidate notes through the path policy and load each
-   one with the reader's bounded loader, which opens every path component
-   without following symlinks. Count skipped notes by reason. Only notes that
-   pass the reader's content checks go on to the next stage.
-2. **Match.** Send the loaded text of the eligible notes to one ripgrep process
-   on standard input, in the sorted path order of the results. Each note's text
-   is sent as the reader sees it: without a BOM, with CRLF normalized to LF,
-   and with every line ending in LF. ripgrep never opens a vault file, so a
-   file changed or replaced after loading cannot affect the matches. A
-   reported line number maps back to its note and line; a match cannot cross
-   notes because a query cannot contain a newline. Because the stream is in
-   result order, ripgrep's `--max-count` of `max_results + 1` stops the search
-   as soon as the result is known to be truncated.
+- Fixed-string JSON output, `--encoding none` so that byte offsets refer to
+  the bytes sent, and an explicit case option.
+- An argument-list call (`shell=False`) with the query passed as the value of
+  `-e`, explicit options, and a minimal environment, so user configuration
+  cannot change behavior.
+- Each reported line must equal the sent line at the reported position;
+  otherwise the result is `SEARCH_FAILED`.
+- Standard input is written while standard output and error are read,
+  concurrently and in bounded chunks, and the output budget is checked before
+  more output is kept. ripgrep may stop reading its input
+  early after `--max-count`; that is not a failure.
+- Exit status 0 means matches, 1 means no matches, and any other status or a
+  signal is `SEARCH_FAILED`.
+- On timeout, cancellation, or an exceeded budget, the process is killed and
+  reaped. A further cancellation during the reap takes effect after it.
 
-Run ripgrep with fixed-string JSON output, `--encoding none` so that it
-reports byte offsets into exactly the bytes sent, and an explicit case option.
-Use argument-list subprocess calls (`shell=False`), and pass the query as a
-value to `-e`; never interpolate it into a command. Use explicit options and a
-minimal environment so user configuration cannot alter behavior. Check that
-each reported line equals the sent line at the reported position before
-building its snippet; an inconsistency is `SEARCH_FAILED`.
+The deadline starts with the request. Discovery and loading run outside the
+event loop and stop at the next entry, file, or read chunk after the deadline
+or a cancellation. A filesystem call that is already blocked cannot be
+interrupted: the search still returns at the deadline, and the background
+work stops when that call returns.
 
-Write the input and read standard output and error concurrently, in bounded
-chunks, and check the output budget before keeping more output; never capture
-arbitrarily large output and truncate afterward. ripgrep may stop reading its
-input early after `--max-count`; that is not a failure. Its exit status decides
-the outcome: 0 means matches, 1 means no matches, and any other status or
-signal is `SEARCH_FAILED`. Kill and reap the process on timeout, cancellation,
-or an exceeded budget. A further cancellation that arrives while the killed
-process is being reaped takes effect after the reap. The kill cannot be
-caught or ignored, so only a kernel delay in the process's exit can make this
-wait outlast the deadline.
-
-The deadline starts when the search request starts. Discovery and loading run
-outside the event loop and stop at the next entry, file, or read chunk after
-the deadline or a cancellation. A filesystem call that is already blocked
-cannot be interrupted: the search still returns at the deadline, and the
-background work stops when that call returns. The [ripgrep
-guide](https://github.com/BurntSushi/ripgrep/blob/master/GUIDE.md) is the
-upstream reference.
-
-Enforce the search deadline, visited-entry, source-byte, and subprocess-output
-budgets from the initial limits table. Exceeding any budget is a
-`SEARCH_LIMIT_EXCEEDED` error, without presenting partial results as complete.
-Only the caller's `max_results` limit produces a successful truncated response.
-ripgrep's JSON output contains each matching line in full with the position
-of every occurrence, so a few matches on very long lines, or on lines with very
-many occurrences, can exceed the output budget.
+Exceeding the deadline or the visited-entry, source-byte, or subprocess-output
+budget is a `SEARCH_LIMIT_EXCEEDED` error, without partial results. Only the
+caller's `max_results` limit produces a successful truncated response.
+ripgrep's JSON output contains each matching line in full, so a few matches on
+very long lines can exceed the output budget.
 
 ### knowledge_read
 
@@ -296,9 +270,7 @@ knowledge_read(path: str, start_line: int = 1, end_line: int | null = null)
   in the file, so consecutive pages join by concatenation. Removing the number
   and tab from each line gives the note text. When no lines are returned,
   `numbered_content` is empty. The numbers let a caller cite a line without
-  counting lines; the [retrieval
-  evaluation](retrieval-evaluation.md#known-weaknesses) showed that hosts miscounted
-  lines when the read returned only the range bounds.
+  counting lines.
 - The returned-content limit counts the UTF-8 bytes of the line text, without
   the number prefixes: after BOM removal and CRLF normalization, and including
   each line's LF. The prefixes do not change where a read stops. If the next
@@ -347,6 +319,10 @@ knowledge_list(path: str = "", offset: int = 0, limit: int = 100)
   (more entries exist).
 - Enforce the immediate-entry scan limit; beyond that return
   `DIRECTORY_LIMIT_EXCEEDED`. Do not build an unbounded directory listing.
+- Known limitation: if the listed directory is replaced by a symlink between
+  the policy check and the scan, the listing can return an empty page instead
+  of `ACCESS_DENIED`. Each entry is still checked from the root, so no names
+  from outside the root are exposed.
 
 ### knowledge_info
 
@@ -404,14 +380,9 @@ Failure to configure the root or locate ripgrep is a startup error with a
 nonzero exit status, not a live half-working server. Startup looks for the
 `rg` executable on the server process's `PATH`.
 
-Use shared error translation in the MCP adapter for all four tools. Translate
-unexpected application exceptions explicitly into a generic `INTERNAL_ERROR`;
-the SDK's default error response does not supply this domain code. Construct
-safe messages from known conditions rather than returning raw exception text.
-Diagnostic logs must obey the content restrictions above, including for
-exceptions containing source bytes. Cancellation must still propagate to active
-work. [SDK error
-handling](https://py.sdk.modelcontextprotocol.io/servers/handling-errors/).
+An unexpected exception in any tool becomes a generic `INTERNAL_ERROR`, never
+raw exception text, and its log entry follows the content restrictions above.
+Cancellation still propagates to active work.
 
 Each operation reads the local vault checkout on a best-effort basis.
 Concurrent edits may affect a read, and search locations can become stale
@@ -428,8 +399,7 @@ Markdown, hidden files, traversal, symlinks inside/outside the root,
 root-prefix collisions, wrong types, invalid UTF-8/NULs, oversized files/lines,
 output truncation, and missing files.
 
-Every tool must reject access to hidden and symlinked content; search/list must
-not reveal it. Tests use a temporary synthetic vault and an outside sentinel
-file. No tests depend on the vault owner's real notes. Cover subprocess
-arguments, exit codes, timeout cleanup, and bounded output as well as ordinary
-search success.
+Tests use a temporary synthetic vault and an outside sentinel file, and check
+that no tool reveals hidden or symlinked content. Cover subprocess arguments,
+exit codes, timeout cleanup, and bounded output as well as ordinary search
+success.

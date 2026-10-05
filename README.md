@@ -4,23 +4,24 @@ A read-only MCP server that lets an agent search a personal knowledge base of
 Markdown notes, read the relevant lines, and cite the source note. It reads a
 local Git checkout of the notes without modifying them.
 
-## Status
+## Features
 
-The project is under development. The `knowledge-server` command serves four
-read-only MCP tools over stdio to a local MCP host: `knowledge_search`,
-`knowledge_read`, `knowledge_list`, and `knowledge_info`. It has been checked
-with Claude Code and Codex CLI.
+- Four read-only MCP tools: `knowledge_search` (literal phrase search),
+  `knowledge_read` (line ranges with line numbers for citation),
+  `knowledge_list`, and `knowledge_info`.
+- One visibility policy for every tool: only regular `.md` notes, with no
+  hidden paths or symlinks, and fixed limits on the size of results.
+- Reads the local vault checkout as it is now, never writes to it, and never
+  runs Git.
+- Two ways to connect:
+  - `knowledge-server` serves local MCP hosts over stdio. It has been checked
+    with Claude Code and Codex CLI.
+  - `knowledge-server-http` is a protected HTTP service for remote clients
+    such as ChatGPT. It accepts only requests that Cloudflare Access signed
+    for the vault owner, and includes a systemd unit.
 
-`knowledge-server-http` serves the same tools over HTTP on loopback. It
-accepts only requests that carry a valid Cloudflare Access assertion for the
-pinned vault owner. Through Cloudflare Access Managed OAuth and Tunnel,
-ChatGPT has used it to answer questions about the sample notes and cite the
-source note and line. It has a synthetic mode and an explicit real-vault
-mode, and `deploy/` holds a systemd unit for the VM; real notes are not
-served until the vault owner authorizes a scope. The [usage
-guide](docs/usage.md) describes the launcher and the service runbook, and
-the [implementation tasks](docs/implementation-tasks.md) track progress and
-record the trial evidence.
+The first version is complete. The [roadmap](docs/roadmap.md) lists optional
+next steps.
 
 ## Quick start
 
@@ -49,8 +50,8 @@ local vault checkout. Replace the example paths with absolute paths.
    searches, reads the relevant lines, and cites the note path and line.
 
 The host sends the note excerpts it receives to its model provider. The
-[usage guide](docs/usage.md) explains what the server reads, its limits,
-data disclosure, troubleshooting, and the Python API.
+[usage guide](docs/usage.md) covers registration details, troubleshooting,
+and how the tools behave.
 
 ## Development prerequisites
 
@@ -80,24 +81,39 @@ uv run pytest
 ```
 
 GitHub Actions runs `scripts/check --ci` automatically only on pushes to
-`main`, so run the script locally before merging `dev`.
+`main`, so run the script locally before merging into `main`. CI installs
+ripgrep from the Ubuntu packages, so it can test a different ripgrep version
+than your machine.
 
 ## Project documents
 
-- [Project glossary](GLOSSARY.md): canonical terms for the vault, its local
-  checkout, and project roles.
+Guides:
+
+- [Usage guide](docs/usage.md): local host registration, troubleshooting,
+  behavior, and limits.
+- [Deployment guide](docs/deployment.md): setting up the ChatGPT route in the
+  VM, daily operation, updates, the emergency stop, and troubleshooting.
+
+Specifications:
+
+- [Tool contract](docs/tool-contract.md): exact tool behavior, limits, and
+  errors.
+- [HTTP contract](docs/http-contract.md): the HTTP entry point's
+  configuration, request checks, assertion rules, and logging.
+
+Design and planning:
+
 - [Architecture overview](docs/architecture.md): what the components do and
   how they work together.
-- [Usage guide](docs/usage.md): host registration, the synthetic HTTP trial,
-  the VM service runbook, behavior, limits, and data disclosure.
+- [Design decisions](docs/design-decisions.md): why the server works as it
+  does, the remote route and its trust boundary, and what is verified.
+- [Roadmap](docs/roadmap.md): optional later work and how to start a task.
+- [Sample notes and retrieval questions](docs/sample-notes.md): the invented
+  test notes, the fixed questions about them, and the known retrieval
+  weaknesses.
+
+Project conventions:
+
+- [Project glossary](GLOSSARY.md): canonical terms for the vault, its local
+  checkout, and project roles.
 - [Repository guide](AGENTS.md): development workflow and writing conventions.
-- [Implementation plan](docs/implementation-plan.md): architecture, decisions,
-  and milestones.
-- [Phase 1 contract](docs/phase-1-contract.md): agreed tool behavior and
-  boundaries.
-- [Web access plan](docs/web-access.md): the HTTP security contract and remote
-  route for ChatGPT, including the OAuth settings validated in the trial.
-- [Implementation tasks](docs/implementation-tasks.md): ordered tasks,
-  acceptance criteria, and progress.
-- [Retrieval evaluation](docs/retrieval-evaluation.md): fixed questions about
-  the sample notes and the results from local hosts.

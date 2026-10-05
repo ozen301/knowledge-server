@@ -1,37 +1,25 @@
-# Retrieval evaluation
+# Sample notes and retrieval questions
 
-This document describes how to evaluate retrieval with a small, fixed set
-of questions about the sample notes in `tests/fixtures/vault/`, and holds the
-current baseline results from local MCP hosts. Use it to check a retrieval
-change: run the affected questions, compare the results with the baseline,
-and replace the baseline when the change is adopted. The [implementation
-tasks](implementation-tasks.md) record what each evaluation decided.
+`tests/fixtures/vault/` holds a small vault of invented notes in English and
+Japanese. They let the project test and demonstrate retrieval without the
+vault owner's real notes:
 
-The evaluation is a quick check, not a rigorous benchmark. Each question runs
-once per host, and models vary between runs, so a single result is an example,
-not a rate.
+- The automated tests search and read them, and
+  `tests/test_retrieval_evaluation.py` checks the reference queries of the
+  [questions](#question-set) below against them.
+- The HTTP launcher's synthetic mode serves only an exact copy of them,
+  checked against `src/knowledge_server/adapter/synthetic-vault.json`. When a
+  note changes, update that manifest in the same change.
+- The [usage](usage.md#check-the-connection) and
+  [deployment](deployment.md#troubleshooting) guides use one of them for a
+  connection check.
 
-Each question has three parts that are recorded separately, so that a failure
-can be traced to one step:
+The notes imitate real ones: setup notes, research notes, a long note of 245
+lines, Markdown tables and code blocks, and links between notes. Some lines
+are written to exercise known weaknesses of literal search, as the next
+section describes.
 
-- the **question**, as the vault owner would ask it;
-- the **reference queries**, literal search queries that show which lines the
-  search can and cannot find;
-- the **expected answer** and the lines that support it, or the expected
-  outcome "no answer".
-
-A host run then shows which queries the agent actually chose, which notes it
-read, and whether the cited lines support its answer. A failure is caused by
-one of: **query choice** (the agent did not search for words in the note),
-**matching** (the note contains the text but search cannot find it),
-**reading** (the agent answered without reading the lines it needed), or
-**citation** (the cited path or line does not support the answer).
-
-`tests/test_retrieval_evaluation.py` repeats every reference query and checks
-its matches and the expected answer lines. It runs the real ripgrep and no
-model provider.
-
-## Sample notes with decomposed Unicode
+## Deliberate Unicode forms
 
 Two notes store some characters in decomposed form, as text copied from a PDF
 often is. The characters look the same as their usual precomposed form but do
@@ -52,6 +40,15 @@ contains the full-width `＋`, which does not match the half-width `+`.
 you edit these notes, keep the decomposed characters.
 
 ## Question set
+
+Each question has three parts that are recorded separately, so that a failure
+can be traced to one step:
+
+- the **question**, as the vault owner would ask it;
+- the **reference queries**, literal search queries that show which lines the
+  search can and cannot find;
+- the **expected answer** and the lines that support it, or the expected
+  outcome "no answer".
 
 Paths are relative to `tests/fixtures/vault/`. A reference query with no
 matches is written as "none".
@@ -89,7 +86,19 @@ The hosts receive each question with a request for a citation:
 - Japanese: `knowledge vaultを使って答えてください：<question>
   出典のノートのパスと行番号も示してください。`
 
-## Run the questions through a host
+## Check a retrieval change
+
+Use the questions to check a change that affects retrieval: run the affected
+questions through one or more hosts, compare the results with the [known
+weaknesses](#known-weaknesses), and update that section when the change is
+adopted. Each question runs once per host, and models vary between runs, so a
+single result is an example, not a rate.
+
+A failure is caused by one of: **query choice** (the agent did not search for
+words in the note), **matching** (the note contains the text but search
+cannot find it), **reading** (the agent answered without reading the lines it
+needed), or **citation** (the cited path or line does not support the
+answer).
 
 Copy the sample notes so that a host cannot change them, and start the host
 from an empty directory that is not near the copy. Codex runs shell commands
@@ -138,106 +147,38 @@ Grade each run from its transcript:
   tools, for example with shell commands, is not counted; repeat it from an
   empty directory.
 
-## Baseline results
-
-Run on 2026-10-01 with the numbered read format of the
-[contract](phase-1-contract.md#knowledge_read). Hosts: Claude Code 2.1.286
-with its default model, Claude Haiku 4.5 (`claude-haiku-4-5-20251001`), and
-with Claude Sonnet 5.5 (`claude-sonnet-5-5`); Codex CLI 0.159.3 with
-`gpt-6-luna` at medium effort. The Japanese prompt then said 「ナレッジボールト」
-instead of "knowledge vault". The vault copy was unchanged afterwards.
-
-Each cell gives the outcome, the cited lines, and the number of tool calls.
-
-| ID | Haiku 4.5 | Sonnet 5.5 | Codex, Luna medium |
-|---|---|---|---|
-| E1 | Correct; line 7; 4 | Correct; lines 7, 22; 2 | Correct; line 7; 2 |
-| E2 | Correct; lines 140, 155 incomplete; 8 | Correct; lines 140-159; 2 | Correct; lines 140-156; 4 |
-| E3 | Correct; line 22; 6 | Correct; lines 10-22; 2 | Correct; lines 18-22; 4 |
-| E4 | Correct; line 13 incomplete; 2 | Correct; lines 7-17; 3 | **Failed: no tool calls**; 0 |
-| E5 | Correct; lines 18-19; 3 | Correct; lines 18-19; 2 | Correct; lines 18-19; 2 |
-| E6 | Correct no answer; line 26; 20 | Correct no answer; line 26; 3 | Correct no answer; line 26; 3 |
-| E7 | Correct no answer; 10 | Correct no answer; lines 5, 16-17; 4 | Correct no answer; lines 10-17; 5 |
-| E8 | **Wrong: no notes found**; 3 | **Wrong: no notes found**; 5 | **Wrong: no notes found**; 2 |
-| J1 | Correct; lines 9-13; 4 | Correct; lines 7-13, 15-21; 4 | Correct; lines 7-13; 6 |
-| J2 | Correct; lines 3-4; 7 | Correct; lines 3-4, 6-8; 3 | Correct; lines 3-4, 6-8; 6 |
-| J3 | Correct; line 5; 2 | Correct; lines 5-7; 2 | Correct; line 5; 2 |
-| J4 | Correct; lines 11-12; 3 | Correct; lines 11-12, 14; 2 | Correct; lines 11-12; 2 |
-| J5 | **Partly wrong: presents a TODO item as the plan**; lines 61-67, 102-104; 25 | Correct no answer; lines 18, 25, 29, 61-67, 120; 6 | Correct no answer; lines 25, 61; 8 |
-| J6 | Correct; lines 11-12; 16 | **Wrong: no notes found**; 14 | **Wrong: no notes found**; 4 |
-| E9 | Correct; lines 92-97; 3 | Correct; lines 78, 92-97; 2 | Correct; lines 95, 96; 2 |
-| E10 | **Wrong: answered from the setup section**; lines 113-135; 4 | Correct; lines 216-223; 4 | Correct; lines 216-223; 6 |
-| E11 | Correct; lines 128-129 incomplete; 6 | Correct; lines 124-125, 128-129; 2 | Correct; lines 124-129; 4 |
-| J7 | Correct; line 35; 2 | Correct; lines 35, 112; 3 | Correct; line 35; 2 |
-| J8 | Correct; lines 83 incomplete, 85-88; 2 | Correct; lines 77-88; 3 | Correct; lines 81-83; 4 |
-
-No cited line was off. Four runs had incomplete citations, all from Haiku:
-each cited only part of the passage that supports its answer (E2, E4, E11,
-J8). Sonnet and Codex had none. The failed runs:
-
-- **E8, all hosts:** they searched `Hervé Jégou`, `Jégou`, `Herve Jegou`, and
-  similar precomposed or unaccented forms, found nothing, and answered that no
-  note mentions the name. `Herve` alone would have matched.
-- **J6, Sonnet and Codex:** they searched `ベンチマーク`, `benchmark`, `性能評価`,
-  and similar words, found nothing, and answered that no note covers
-  benchmarks. Haiku listed the folders and read notes until it reached
-  `ego4d.md`.
-- **J5, Haiku:** it read the related notes and presented a TODO item, "Ego4D
-  Hands and Objects のベースラインを動かしてみる", as the planned model.
-- **E10, Haiku:** it searched `NAS share mounted development VM`, `NAS share
-  mount`, and `NAS`, read the mount setup at lines 111-145, and answered from
-  it. It never reached the troubleshooting section at line 214.
-- **E4, Codex:** no tool calls. It ran `rg` in its empty working directory
-  and answered that it found no notes.
-
 ## Known weaknesses
 
-These weaknesses appear in the baseline. A retrieval change that targets one
-of them should improve the questions named here.
+The questions were last run on 2026-10-01, with Claude Code 2.1.286 using
+Claude Haiku 4.5 and Claude Sonnet 5.5, and with Codex CLI 0.159.3 using
+`gpt-6-luna` at medium effort. The other runs answered correctly, and no
+cited line was wrong, though Haiku sometimes cited only part of a passage.
+These runs failed:
+
+| Question | Hosts | Cause |
+|---|---|---|
+| E8 | All three | Matching: they searched `Hervé Jégou` and similar precomposed or unaccented forms and reported that no note mentions the name |
+| J6 | Sonnet, Codex | Matching: they searched `ベンチマーク`, `benchmark`, and similar words and reported that no note covers benchmarks |
+| J5 | Haiku | Reading: it presented a TODO item as the planned model |
+| E10 | Haiku | Query choice: it answered from the setup section and never reached the troubleshooting section |
+| E4 | Codex | No tool calls: it ran `rg` in its empty working directory instead |
+
+The weaknesses behind them:
 
 - **Decomposed text causes false no-answer results** (E8, J6). When the
   decomposed word is the only way to a note, hosts search the precomposed
-  form, find nothing, and report that no note exists. When the note can also
-  be found through other words (E5, J4), every host finds and reads it.
-- **Questions with no answer cost many calls** (E6, J5). The hosts search
-  until they are confident that the vault does not contain the answer: up to
-  25 calls. Questions with an answer usually need 2 to 8 calls.
+  form, find nothing, and report that no note exists. NFC-equivalent
+  matching would fix this; the [roadmap](roadmap.md#nfc-equivalent-matching)
+  lists it as the first candidate.
+- **Questions with no answer cost many calls** (E6, J5): up to 25, against
+  2 to 8 for questions with an answer.
 - **Queries that combine separate keywords find nothing.** A query such as
   `一人称視点 三人称視点 利点` is one literal string, so it does not match lines
   that contain the words separately.
-- **Codex often skips the tools.** Codex usually runs shell commands such as
-  `rg` in its working directory before it calls the tools, and sometimes it
-  stops there (E4). This is host behavior; the server cannot change it.
+- **Codex often skips the tools** and runs shell commands in its working
+  directory first. This is host behavior; the server cannot change it.
 
-Citations are mostly reliable when the line number comes from the server:
-from a search match or from a numbered read line. Haiku sometimes cites only
-one line of a longer passage. With the earlier read format,
-which returned only the first and last line numbers of a range, hosts often
-miscounted lines in whole-note reads.
-
-## Limit review
-
-No search was truncated or incomplete, and no read needed a second page. The
-hosts asked for up to 50 results, the maximum. The sample notes are too small
-to test the file size, read, and search budgets. The observed results do not
-justify a change, so the [initial limits](phase-1-contract.md#initial-limits)
-stay as they are. Review them again with the private evaluation of the real
-vault or when larger notes are added.
-
-## Deferred: NFC-equivalent matching
-
-NFC normalization converts decomposed characters to their precomposed form.
-If search normalized both the query and the note text to NFC, E8 and J6
-would find line 18 of `semantic-search.md` and line 11 of `ego4d.md`. It
-would not make `Jegou` match `Jégou`, which needs accent-insensitive matching,
-and it would stop the accidental `Herve` match. Snippets, paths, and line
-numbers must still come from the original text, as the [implementation
-plan](implementation-plan.md#deferred-retrieval-decisions) requires.
-
-The demonstrated cost is a false no-answer result when the decomposed word is
-the only way to the note: in 7 of 12 E8 and J6 runs over the two evaluation
-rounds. Decomposed text is common in text copied from PDFs and in macOS file
-names, so NFC matching remains an important deferred feature. It needs a
-specification for normalized search input and original-text snippets before
-implementation. Width matching, such as `＋` and `+`, remains a separate
-decision; no host searched with the half-width form in J2.
+Citations are reliable when the line number comes from the server, from a
+search match or a numbered read line. No search was truncated and no read
+needed a second page, so the [limits](tool-contract.md#initial-limits) stay
+as they are; the sample notes are too small to test the size budgets.

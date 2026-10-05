@@ -1,5 +1,5 @@
 # knowledge-server HTTP entry point for the Cloudflare Tunnel route. Install
-# and operate it as docs/usage.md#run-the-http-service-in-the-vm describes.
+# and operate it as docs/deployment.md describes.
 # ProtectSystem=strict mounts the whole file system read-only for the
 # process, so it cannot write to the notes even where permissions allow it.
 

@@ -1,11 +1,11 @@
 # Repository guide
 
 This project gives agents access to a personal knowledge base through the Model
-Context Protocol (MCP). The [implementation plan](docs/implementation-plan.md)
-describes the architecture and development stages. The
-[specification](docs/phase-1-contract.md) defines the first version's tool
-behavior, and the [implementation tasks](docs/implementation-tasks.md) list the
-work and the checks required to complete it.
+Context Protocol (MCP). The specifications, the [tool
+contract](docs/tool-contract.md) and the [HTTP contract](docs/http-contract.md),
+define exact behavior. The [design decisions](docs/design-decisions.md) explain
+why the server works as it does, and the [roadmap](docs/roadmap.md) lists
+optional later work and defines active tasks with their acceptance checks.
 
 Repository skills are in `.agents/skills/<name>/SKILL.md`. When asked to use
 one that your tool does not list, read that file and follow it. You may use the
@@ -66,8 +66,8 @@ for features and behavior changes, including bug fixes:
 4. **Validation:** Run the checks below and inspect the diff, including for
    additions that the requirements do not need.
 5. **Drift prevention:** Update the specification, this guide, and usage
-   instructions when a change makes them inaccurate. When a change adds a
-   component or changes what one does, update the
+   and deployment instructions when a change makes them inaccurate. When a
+   change adds a component or changes what one does, update the
    [architecture overview](docs/architecture.md). Include those updates in the
    same change as the code and tests.
 
@@ -144,9 +144,10 @@ Conventions:
   cards."
 - Avoid filler and canned conclusions such as "leverage," "it's worth noting,"
   "Bottom Line," and "In short."
-- Keep detailed progress in `docs/implementation-tasks.md`; summarize current
-  capabilities in the README. Shorten each completed task to what exists,
-  essential validation evidence, and what later tasks need to know.
+- Define planned work as tasks in `docs/roadmap.md`. When a task is complete,
+  remove its entry, summarize new capabilities in the README features, and
+  record essential validation evidence in the verification section of
+  `docs/design-decisions.md`.
 - Before drafting, identify the reader's need and choose one primary document
   for each topic. Match the detail to that document's role; summarize and link
   elsewhere. Draft from the final outcome, not the conversation or work log.

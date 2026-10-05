@@ -2,9 +2,8 @@
 
 This document explains what the parts of knowledge-server do and how they work
 together. It is an introduction for developers who are new to the code. The
-[Phase 1 contract](phase-1-contract.md) defines the exact behavior, and the
-[implementation tasks](implementation-tasks.md) track which parts exist. Terms
-such as "local vault checkout" are defined in the [glossary](../GLOSSARY.md).
+[tool contract](tool-contract.md) defines the exact behavior. Terms such as
+"local vault checkout" are defined in the [glossary](../GLOSSARY.md).
 
 ## What the server does
 
@@ -83,7 +82,7 @@ it names each rejected argument and its accepted values and follows the
 limits automatically.
 
 `core/limits.py` holds every resource limit in `Limits`; `DEFAULT_LIMITS` has
-the [contract values](phase-1-contract.md#initial-limits). Core operations
+the [contract values](tool-contract.md#initial-limits). Core operations
 accept a `Limits` argument, so tests can use small limits instead of large
 test files.
 
@@ -98,7 +97,7 @@ visible.
 
 Only regular `.md` files in non-hidden directories are visible. Hidden names,
 symlinks, special files such as FIFOs, and paths that could leave the root are
-rejected; the [contract](phase-1-contract.md#configuration-and-common-policy)
+rejected; the [contract](tool-contract.md#configuration-and-common-policy)
 lists the exact rules. Visibility is separate from readability: a listed note
 can still be too large or not valid text.
 
@@ -108,7 +107,7 @@ can still be too large or not valid text.
 four tools. For a note that is too large or is not valid text, `note_info()`
 returns `readable=false` with the reason instead of an error; other failures,
 such as a permission error, are still errors
-([`knowledge_info`](phase-1-contract.md#knowledge_info)).
+([`knowledge_info`](tool-contract.md#knowledge_info)).
 
 `load_note()` is the shared bounded loader. It opens each path component
 relative to its parent without following symlinks, so a symlink or FIFO
@@ -143,7 +142,7 @@ Search enforces a deadline and budgets for visited entries, loaded bytes, and
 ripgrep output. On a timeout, a cancellation, or an exceeded budget, it kills
 and reaps the ripgrep process. A filesystem call that is already blocked
 cannot be interrupted, so the loading thread can outlive a search that has
-returned. The [contract](phase-1-contract.md#knowledge_search) gives the
+returned. The [contract](tool-contract.md#knowledge_search) gives the
 details.
 
 ### MCP adapter
@@ -161,7 +160,7 @@ schemas. For each call, the request model validates the raw arguments, and the
 tool calls one core function. Read, list, and info run in a worker thread;
 search is awaited directly, so cancelling the request kills its ripgrep
 process. A `KnowledgeError` becomes a tool error with the code and message
-([format](phase-1-contract.md#error-and-change-behavior)). Any other exception
+([format](tool-contract.md#error-and-change-behavior)). Any other exception
 becomes `INTERNAL_ERROR`, and the log names only the exception type and source
 location, because the exception's message can contain note text or paths.
 
@@ -177,16 +176,18 @@ so check the adapter when upgrading the SDK.
 The `knowledge-server-http` command is a second way to reach the same four
 tools: over HTTP instead of stdio. It listens on `127.0.0.1` (loopback), so
 only programs in the same network namespace, such as others on the same
-machine, can connect. The [web access plan](web-access.md) specifies the
-remote route, the exact HTTP contract, and the VM services.
+machine, can connect. The [HTTP contract](http-contract.md) specifies its
+exact checks, and the [design
+decisions](design-decisions.md#why-this-remote-route) explain the remote route
+and the VM services.
 
-In the tested route, ChatGPT reaches the server through Cloudflare:
+In the deployed route, ChatGPT reaches the server through Cloudflare:
 
 ```text
 ChatGPT
     -> Cloudflare Access (vault owner sign-in with Managed OAuth)
     -> Cloudflare Tunnel
-    -> cloudflared on the Ubuntu VM
+    -> cloudflared on the VM
     -> knowledge-server-http on 127.0.0.1 on the same VM
 ```
 
@@ -261,13 +262,12 @@ The code is in `adapter/`:
 
 `deploy/` holds the server's systemd unit, which runs it as a dedicated
 account with a read-only view of the file system, and an example
-configuration. The [usage guide](usage.md#run-the-http-service-in-the-vm)
-installs them with cloudflared and the vault synchronization.
+configuration. The [deployment guide](deployment.md) installs them with
+cloudflared and the vault synchronization.
 
-The [HTTP contract](web-access.md#local-http-implementation-contract) gives
-the exact settings, checks, and limits, and the [owner
-identity](web-access.md#owner-identity) section explains how the owner subject
-is established.
+The [HTTP contract](http-contract.md) gives the exact settings, checks, and
+limits, and its [owner identity](http-contract.md#owner-identity) section
+explains how the owner subject is established.
 
 ## Trust boundaries
 
@@ -340,8 +340,8 @@ Passing one check does not skip the next:
 
 On the stdio route, the vault owner's MCP host starts the server, so there is
 no authentication; argument validation and the file limits are the same as
-for HTTP. The [request gate](web-access.md#listener-and-request-gate) and
-[assertion validation](web-access.md#assertion-validation) rules give the
+for HTTP. The [request gate](http-contract.md#listener-and-request-gate) and
+[assertion validation](http-contract.md#assertion-validation) rules give the
 exact Host, Origin, claim, signing-key, and request-limit checks.
 
 ## Design choices worth knowing
@@ -353,9 +353,9 @@ This keeps host details private and gives the agent a path it can cite. Text
 inside a note is returned as written, even if it contains a path.
 
 **Numbered read lines.** Read results put each line's number in front of its
-text, so that an agent can cite a line without counting lines. In the
-[retrieval evaluation](retrieval-evaluation.md#known-weaknesses), hosts often
-cited wrong lines when a read returned only the first and last line numbers.
+text, so that an agent can cite a line without counting lines. In early runs
+of the [retrieval questions](sample-notes.md#question-set), hosts often cited
+wrong lines when a read returned only the first and last line numbers.
 Search matches carry their line number in a separate field.
 
 **Git ignore rules do not hide notes.** The server reads the checkout's files
@@ -371,12 +371,14 @@ follow a symlink even after the policy check has passed.
 
 ## Where to go next
 
-- [Usage guide](usage.md): connecting the server to an MCP host.
-- [Phase 1 contract](phase-1-contract.md): exact tool behavior, limits, and
-  error codes.
-- [Implementation plan](implementation-plan.md): decisions, their reasons, and
-  the optional later possibilities.
-- [Web access plan](web-access.md): the remote route for ChatGPT and the
-  HTTP entry point's exact contract.
-- [Implementation tasks](implementation-tasks.md): progress and the next task.
+- [Usage guide](usage.md): connecting the server to a local MCP host.
+- [Deployment guide](deployment.md): setting up and operating the ChatGPT
+  route.
+- [Tool contract](tool-contract.md): exact tool behavior, limits, and error
+  codes.
+- [HTTP contract](http-contract.md): the HTTP entry point's exact checks,
+  limits, and logging.
+- [Design decisions](design-decisions.md): why the server works as it does,
+  the remote route and its trust boundary, and what is verified.
+- [Roadmap](roadmap.md): optional later work and how to start it.
 - [Repository guide](../AGENTS.md): development workflow and conventions.
