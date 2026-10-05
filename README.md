@@ -84,7 +84,7 @@ GitHub Actions runs `scripts/check --ci` automatically only on pushes to
 
 ## Project documents
 
-- [Project glossary](CONTEXT.md): canonical terms for the vault, its local
+- [Project glossary](GLOSSARY.md): canonical terms for the vault, its local
   checkout, and project roles.
 - [Architecture overview](docs/architecture.md): what the components do and
   how they work together.

@@ -4,7 +4,7 @@ This document explains what the parts of knowledge-server do and how they work
 together. It is an introduction for developers who are new to the code. The
 [Phase 1 contract](phase-1-contract.md) defines the exact behavior, and the
 [implementation tasks](implementation-tasks.md) track which parts exist. Terms
-such as "local vault checkout" are defined in the [glossary](../CONTEXT.md).
+such as "local vault checkout" are defined in the [glossary](../GLOSSARY.md).
 
 ## What the server does
 
@@ -196,11 +196,13 @@ cloudflared opens an outbound connection to Cloudflare Tunnel, so the router
 needs no open inbound port. Cloudflare decrypts the traffic at its edge.
 
 Each HTTP request passes a gate before any MCP handling, then reaches the
-same tools, knowledge core, and path policy as stdio:
+same tools, knowledge core, and path policy as stdio. In stateless mode, the
+server keeps no MCP session between requests and answers with plain JSON
+instead of an event stream:
 
 ```text
 HTTP request
-    -> gate: Host, then Origin, then Cloudflare Access assertion
+    -> gate: Host, then Origin, then Access assertion
     -> bounds: requests in progress, then body size and read time
     -> SDK Streamable HTTP at /mcp (stateless, JSON responses)
     -> the same four tools -> knowledge core -> root
@@ -211,23 +213,16 @@ HTTP request
   be absent or exactly match an entry in `allowed_origins`. That list names
   sites, not users, and authenticates nobody.
 - The `Cf-Access-Jwt-Assertion` header, which Access adds to each request it
-  lets through, must hold a JSON Web Token (JWT) that Cloudflare signed for
-  the configured Access application and the pinned owner subject: the vault
-  owner's identifier, verified privately and fixed in the configuration. The
-  server verifies the signature with Cloudflare's public keys. The OAuth
-  access token in the `Authorization` header is meant for Cloudflare and
-  never authenticates a request here.
+  lets through, must hold the Access assertion: a JSON Web Token (JWT) that
+  Cloudflare signed for the configured Access application and the pinned
+  owner subject, which is the vault owner's identifier, verified privately
+  and fixed in the configuration. The server verifies the signature with
+  Cloudflare's public keys. The OAuth access token in the `Authorization`
+  header is meant for Cloudflare and never authenticates a request here.
 
 A request that fails a check is refused with fixed text before the SDK sees
-it. Host and Origin are checked first, so a request rejected by either check
-cannot make the server fetch keys. Only an authorized request then counts
-toward the limit of requests in progress and has its body read. The gate
-counts body bytes as they arrive and passes the complete body to the SDK, so
-neither a large body nor a slow one can hold the server's memory or a place
-for long. In stateless mode, the server keeps no MCP
-session between requests and answers with plain JSON instead of an event
-stream. The [assertion validation](web-access.md#assertion-validation) rules
-list the exact claim checks.
+it. Only an authorized request counts toward the limit of requests in
+progress and has its body read, within limits on body size and read time.
 
 The launcher reads one private TOML file, named on the command line, that
 holds the launch mode, the root, and the Access settings. It ignores
@@ -251,22 +246,18 @@ The code is in `adapter/`:
   `http_config.py`, runs the mode's root check (in synthetic mode, the one in
   `synthetic.py`), and starts Uvicorn, the web server, on `127.0.0.1` without
   proxy-header interpretation, so a request cannot change its apparent
-  client address or scheme. If the application's startup step fails, the
-  launch fails.
+  client address or scheme.
 - `http.py` creates the SDK's ASGI application (ASGI is Python's standard
   interface between web servers and applications) and wraps all of it, on
-  every path, in `HTTPApplication`, the gate, which also applies the request
-  bounds. The gate forwards the server's startup and shutdown events to the
-  SDK and adds `Cache-Control: no-store` to every response that the
-  application sends. Error responses that Uvicorn generates itself are
-  outside this guarantee.
+  every path, in `HTTPApplication`, the gate. The gate also applies the
+  request bounds and adds `Cache-Control: no-store` to its responses.
 - `http_auth.py` holds the bounded, rate-limited signing-key cache
   (`CachedKeys`) and the assertion check (`AssertionVerifier`, built on
   PyJWT), which returns only yes or no.
 - `http_logging.py` restricts the HTTP process's log to fixed startup and
-  event categories, such as a failed key fetch or an unexpected tool failure,
-  and each request's method, status, and latency. It drops all other
-  diagnostics, which could contain tokens, headers, queries, or note text.
+  event categories and each request's method, status, and latency. It drops
+  all other diagnostics, which could contain tokens, headers, queries, or
+  note text.
 
 `deploy/` holds the server's systemd unit, which runs it as a dedicated
 account with a read-only view of the file system, and an example
@@ -277,6 +268,81 @@ The [HTTP contract](web-access.md#local-http-implementation-contract) gives
 the exact settings, checks, and limits, and the [owner
 identity](web-access.md#owner-identity) section explains how the owner subject
 is established.
+
+## Trust boundaries
+
+A remote request gains trust in steps. It moves through three zones, and a
+boundary of checks follows each zone. At the first boundary, the request is
+authenticated twice: by Cloudflare Access at the edge and then by this
+server. At the second, the adapter validates the tool arguments. At the
+third, the core limits what the request can read:
+
+```text
++------------------------------------------------+
+| ZONE 1: EXTERNAL, UNTRUSTED                    |
+|                                                |
+| ChatGPT -> internet -> Cloudflare edge         |
++-----------------------+------------------------+
+                        |
+                        |  Authentication 1: Cloudflare Access (OAuth)
+                        |  grants access to the Access application
+                        |
+                        |  Authentication 2: HTTPApplication verifies
+                        |  the Access assertion (JWT)
+========================|=========================
+                        | authenticated request
+                        v
++------------------------------------------------+
+| ZONE 2: PROTOCOL AND ADAPTER                   |
+|                                                |
+| MCP SDK -> adapter/server.py                   |
++-----------------------+------------------------+
+                        |
+                        |  strict request model
+========================|=========================
+                        | typed request
+                        v
++------------------------------------------------+
+| ZONE 3: KNOWLEDGE CORE                         |
+|                                                |
+| reader.py, search.py                           |
++-----------------------+------------------------+
+                        |
+                        |  PathPolicy, content and resource limits
+========================|=========================
+                        | visible note, bounded read
+                        v
+                Files under the root
+```
+
+Passing one check does not skip the next:
+
+1. **Authentication 1: Cloudflare Access.** At the edge, Access
+   authenticates the client, such as ChatGPT, with OAuth and lets a request
+   through only if the owner-only policy allows it. It then adds the Access
+   assertion to the request.
+2. **Authentication 2: `HTTPApplication`.** Cloudflare Tunnel and
+   cloudflared only carry the request to the VM; they do not authenticate the
+   client. Any other program in the same network namespace, such as one on
+   the VM, can also connect to the loopback listener, so a request there did
+   not necessarily come through Access. The gate accepts a request only if
+   its Access assertion is signed by Cloudflare for the configured Access
+   application and the pinned owner subject. Only then does the SDK see the
+   request.
+3. **Arguments.** Authentication shows who is calling, not that the
+   arguments are safe. The adapter validates the raw arguments with the
+   tool's request model, so the core receives a typed request and never sees
+   HTTP headers, tokens, or raw MCP arguments.
+4. **Files.** A valid request still gets no general file access. The core
+   offers only the four read-only operations, `PathPolicy` decides which
+   paths are visible, and `reader.py` and `search.py` enforce the content
+   and resource limits.
+
+On the stdio route, the vault owner's MCP host starts the server, so there is
+no authentication; argument validation and the file limits are the same as
+for HTTP. The [request gate](web-access.md#listener-and-request-gate) and
+[assertion validation](web-access.md#assertion-validation) rules give the
+exact Host, Origin, claim, signing-key, and request-limit checks.
 
 ## Design choices worth knowing
 

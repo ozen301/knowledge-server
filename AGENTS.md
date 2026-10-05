@@ -139,7 +139,7 @@ Conventions:
   history, comparisons, or unchanged behavior only when they explain a decision
   or help the reader.
 - Use established technical terms and the names defined in
-  [CONTEXT.md](CONTEXT.md). Explain unfamiliar concepts, and avoid unnecessary
+  [GLOSSARY.md](GLOSSARY.md). Explain unfamiliar concepts, and avoid unnecessary
   coined labels and misleading analogies, such as calling a task list "task
   cards."
 - Avoid filler and canned conclusions such as "leverage," "it's worth noting,"
