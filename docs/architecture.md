@@ -175,11 +175,13 @@ so check the adapter when upgrading the SDK.
 ### Protected HTTP entry point
 
 The `knowledge-server-http` command is a second way to reach the same four
-tools: over HTTP instead of stdio. It serves invented notes only. It listens
-on `127.0.0.1` (loopback), so only programs on the same machine can connect.
+tools: over HTTP instead of stdio. It currently serves invented notes only.
+It listens on `127.0.0.1` (loopback), so only programs in the same network
+namespace, such as others on the same machine, can connect. The [web access
+plan](web-access.md) specifies the remote route and the exact HTTP contract,
+and describes the planned real-vault mode and permanent VM services.
 
-In the tested route, which the [web access plan](web-access.md) describes,
-ChatGPT reaches the server through Cloudflare:
+In the tested route, ChatGPT reaches the server through Cloudflare:
 
 ```text
 ChatGPT
@@ -189,11 +191,10 @@ ChatGPT
     -> knowledge-server-http on 127.0.0.1 on the same VM
 ```
 
-Cloudflare Access protects the public hostname, and its Managed OAuth
-feature acts as the OAuth server for ChatGPT's sign-in, so this server
-implements no OAuth. cloudflared opens an outbound connection to
-Cloudflare Tunnel, so the router needs no open inbound port. Cloudflare
-decrypts the traffic at its edge and serves the OAuth discovery documents.
+Cloudflare Access acts as the OAuth server for ChatGPT's sign-in and serves
+the OAuth discovery documents, so this server implements no OAuth.
+cloudflared opens an outbound connection to Cloudflare Tunnel, so the router
+needs no open inbound port. Cloudflare decrypts the traffic at its edge.
 
 Each HTTP request passes a gate before any MCP handling, then reaches the
 same tools, knowledge core, and path policy as stdio:
@@ -205,86 +206,52 @@ HTTP request
     -> the same four tools -> knowledge core -> trial directory
 ```
 
-Streamable HTTP is the MCP SDK's transport for MCP over HTTP. The server
-runs it in stateless mode, so it keeps no MCP session between requests, and
-it answers with plain JSON instead of an event stream. ChatGPT works with
-this mode.
+- The `Host` header must name the configured public hostname or a loopback
+  name. The `Origin` header, which browsers and some other clients send, must
+  be absent or exactly match an entry in `allowed_origins`. That list names
+  sites, not users, and authenticates nobody.
+- The `Cf-Access-Jwt-Assertion` header, which Access adds to each request it
+  lets through, must hold a JSON Web Token (JWT) that Cloudflare signed for
+  the configured Access application and the pinned owner subject: the vault
+  owner's identifier, verified privately and fixed in the configuration. The
+  server verifies the signature with Cloudflare's public keys. The OAuth
+  access token in the `Authorization` header is meant for Cloudflare and
+  never authenticates a request here.
 
-The gate first checks two ordinary HTTP headers. The `Host` header names the
-hostname that the client wanted to reach; the gate accepts only the
-configured public hostname and the loopback names. The `Origin` header, which
-browsers and some other clients send, names the site that started the
-request: a scheme, a host, and an optional port, such as
-`https://example.com`. The `allowed_origins` setting lists the exact values
-that the gate accepts. It is not a list of users and does not authenticate
-anyone. A request without `Origin` passes this check, because clients such
-as ChatGPT may not send it, but it still needs a valid assertion. With the
-default empty list, any request that sends `Origin` is refused.
-
-Authentication relies on the Cloudflare Access assertion. When Access lets a
-request through, it adds a `Cf-Access-Jwt-Assertion` header that holds a JSON
-Web Token (JWT): a set of claims about the user, the Access application, and
-the token's validity period, signed by Cloudflare. The server does not trust
-any user name that a request states. It verifies the signature with
-Cloudflare's public keys and then checks the claims:
-
-- The issuer (`iss`) must be exactly the HTTPS URL of the configured team
-  domain. The team domain is the domain of the vault owner's Cloudflare Zero
-  Trust organization, configured without a scheme, such as
-  `myteam.cloudflareaccess.com`; the expected issuer is then
-  `https://myteam.cloudflareaccess.com`, with no trailing slash. The team
-  domain also fixes the only URL from which the server fetches Cloudflare's
-  signing keys.
-- The audience (`aud`) must contain the configured application AUD, a tag
-  that identifies one Access application. A token that Access issued for
-  another application is refused.
-- The token must not have expired.
-- The subject (`sub`), Cloudflare's identifier for the signed-in user, must
-  exactly equal the configured `owner_subject`. This pinned owner subject is
-  the vault owner's identifier, verified privately during provisioning and
-  then fixed in the configuration. The server never learns it from a caller.
-  Tokens issued to service credentials instead of users are refused.
-
-The OAuth access token that ChatGPT sends in the `Authorization` header is
-meant for Cloudflare and never authenticates a request here. A request that
-fails any check is refused with a fixed message before the MCP SDK sees it.
-Because Host and Origin are checked first, a request that fails them cannot
-make the server fetch keys.
-
-The server fetches Cloudflare's public signing keys only from the one URL
-that the team domain determines, within limits on time, size, and number of
-keys, and caches them. A token signed with an unknown key can trigger a
-rate-limited refresh, which supports Cloudflare's key rotation. If no
-suitable key is available, the request is refused.
+A request that fails a check is refused with fixed text before the SDK sees
+it. Host and Origin are checked first, so a request rejected by either check
+cannot make the server fetch keys. In stateless mode, the server keeps no MCP
+session between requests and answers with plain JSON instead of an event
+stream. The [assertion validation](web-access.md#assertion-validation) rules
+list the exact claim checks.
 
 The launcher reads one private TOML file, named on the command line, that
-holds the trial directory and the Access settings above. It ignores
+holds the trial directory and the Access settings. It ignores
 `KNOWLEDGE_ROOT` and `.env` files, so an environment prepared for stdio
-cannot point the HTTP server at the real vault. The directory still passes
-the same root validation in `config.py`. A separate check restricts the trial
-to invented notes: before serving, the launcher compares the directory with
-`synthetic-vault.json`, a packaged list of the sample notes and their SHA-256
-digests, and does not start if anything differs. This check runs only at
-startup, and the tools read the directory live afterwards, so keep the
-directory dedicated to the invented notes while the server runs.
+cannot point the HTTP server at the real vault; the directory still passes
+the same root validation in `config.py`. Before serving, the launcher
+compares the directory with `synthetic-vault.json`, a packaged list of the
+sample notes and their SHA-256 digests, and does not start if anything
+differs. This check runs only at startup, and the tools read the directory
+live afterwards, so keep the directory dedicated to the invented notes while
+the server runs.
 
 The code is in `adapter/`:
 
 - `http_main.py` starts the server. It loads the configuration with
   `http_config.py`, runs the check in `synthetic.py`, and starts Uvicorn, the
-  web server, on `127.0.0.1`. Uvicorn does not apply proxy headers such as
-  `X-Forwarded-For`, so a request cannot use them to change its apparent
-  client address or scheme. If the application's startup step fails, the
-  launch fails.
+  web server, on `127.0.0.1` without proxy-header interpretation, so a
+  request cannot change its apparent client address or scheme. If the
+  application's startup step fails, the launch fails.
 - `http.py` creates the SDK's ASGI application (ASGI is Python's standard
   interface between web servers and applications) and wraps all of it, on
-  every path, in `HTTPApplication`, the gate described above. The gate
-  forwards the server's startup and shutdown events to the SDK. It adds
-  `Cache-Control: no-store` to every response that the application sends,
-  which tells caches not to store the response. Error responses that Uvicorn
+  every path, in `HTTPApplication`, the gate. The gate forwards the server's
+  startup and shutdown events to the SDK and adds `Cache-Control: no-store`
+  to every response that the application sends. Error responses that Uvicorn
   generates itself are outside this guarantee.
-- `http_auth.py` holds the key cache (`CachedKeys`) and the assertion check
-  (`AssertionVerifier`, built on PyJWT), which returns only yes or no.
+- `http_auth.py` holds the bounded, rate-limited signing-key cache
+  (`CachedKeys`) and the assertion check (`AssertionVerifier`, built on
+  PyJWT), which returns only yes or no.
 - `http_logging.py` restricts the HTTP process's log to fixed startup
   categories and each request's method, status, and latency. It drops all
   other diagnostics, which could contain tokens, headers, queries, or note
@@ -326,7 +293,7 @@ follow a symlink even after the policy check has passed.
 - [Phase 1 contract](phase-1-contract.md): exact tool behavior, limits, and
   error codes.
 - [Implementation plan](implementation-plan.md): decisions, their reasons, and
-  later milestones.
+  the optional later possibilities.
 - [Web access plan](web-access.md): the remote route for ChatGPT and the
   HTTP entry point's exact contract.
 - [Implementation tasks](implementation-tasks.md): progress and the next task.

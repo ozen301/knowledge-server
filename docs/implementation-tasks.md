@@ -1,10 +1,14 @@
 # Implementation tasks
 
 Run these sequentially. Tasks 1–7 are complete; their entries below keep
-what exists, validation evidence, and what later tasks need. Task 8 is next.
-Tasks 8–9 cover hardening and real-vault deployment, as the [web access
-plan](web-access.md) specifies. Define tasks for retrieval upgrades from the
-[retrieval evaluation](retrieval-evaluation.md) findings.
+what exists, validation evidence, and what later tasks need. Task 8 is next
+(permanent VM services and the real-vault mode), followed by Task 9
+(deployment and real-vault activation), as the [web access
+plan](web-access.md) specifies. Task 9 reaches the planned completion point.
+Later work, starting with [NFC-equivalent
+matching](#follow-up--nfc-equivalent-matching), is optional; define such tasks
+from evaluation evidence, as the [implementation
+plan](implementation-plan.md#later-possibilities) describes.
 
 For each task, follow **Spec -> Tests -> Implementation -> Validation -> Drift
 prevention** as defined in [AGENTS.md](../AGENTS.md). Establish the behavior
@@ -165,124 +169,210 @@ are not passed checks:
 
 ### Handoff
 
-Task 8 addresses the Host, key-rotation, and cache items offline unless the
-vault owner authorizes a live synthetic route, and Task 9 step 1 repeats the
-live probes on the target runtime. The process stop/restart checks do not
-establish Cloudflare route shutdown or issued-token revocation; Task 9
-measures both before real-vault use. Running the full 19-question [retrieval
+Task 8 sets the forwarded Host explicitly in the service configuration,
+checks it against the gate offline, and reviews the edge cache configuration;
+Task 9 step 1 repeats the live probes on the target runtime. Live signing-key
+rotation is not exercised; record it as unobserved unless it is seen in use.
+The process stop/restart checks show that a local stop works while its host
+can be reached. They do not establish a Cloudflare-side route shutdown or
+issued-token revocation; Task 9 verifies a usable emergency stop before
+real-vault use. Running the full 19-question [retrieval
 evaluation](retrieval-evaluation.md) through ChatGPT remains an optional
 follow-up.
 
-## Task 8 — Harden the remote runtime and package it for Unraid
+## Task 8 — Prepare the HTTP service for permanent use in the VM
 
 Depends on: Task 7 (complete). Status: not started.
 
-Harden the Task 7 entry point for permanent use, as the [web access
-plan](web-access.md#runtime-isolation) describes. Choose exact values during
-implementation and record the reasons.
+Prepare the HTTP entry point for permanent use, as the [web access
+plan](web-access.md#runtime-isolation) describes. Add only the items below.
+Choose exact values during implementation and record the reasons. Keep the
+existing assertion, path, key-cache, and logging protections. Until this task
+is implemented, the launcher serves the invented notes only.
 
-- Add request, rate, and concurrency limits for remote requests.
-- Extend key-fetch and restart resilience beyond the Task 7 baseline, and add
-  startup and health diagnostics. If live signing-key rotation cannot be
-  exercised, record it as unobserved.
-- Specify the Host header that the packaged cloudflared sends to the origin,
-  check that the origin configuration accepts it, and test this offline. The
-  gate returns 421 for any Host other than the configured public hostname or
-  a loopback name, and Task 7 did not record the forwarded value.
-- Review the edge cache configuration for Uvicorn's own 400 and 500
-  responses, which the application's `no-store` guarantee does not cover.
-- Keep configuration and secrets outside Git.
-- Package the server and cloudflared for Unraid: an isolated container network
-  with no published origin port on the host, outbound access for cloudflared,
-  a non-root process, and a read-only vault mount.
-- Choose a dedicated local vault checkout or a read-only materialized
-  snapshot, and document an external synchronization procedure.
+- **Request bounds.** Count request-body bytes as they arrive and reject a
+  body over a fixed limit before the SDK buffers it; a `Content-Length` check
+  alone is not enough. Bound the time for reading the body, and add a small
+  global bound on concurrent requests. These bounds cannot stop a filesystem
+  call that a worker thread has already started; the Phase 1 limits bound
+  that work, and search keeps its own deadline.
+- **Diagnostics.** Add fixed, content-free log categories, including one for
+  failed signing-key retrieval, after which the gate rejects the request with
+  401, and one for internal tool failures, which the client receives as tool
+  errors inside HTTP 200 responses. The categories never contain tokens,
+  claims, headers, identity values, paths, queries, note text, or exception
+  messages.
+- **Startup and restart.** Use the VM's service manager to start the server
+  and cloudflared at boot and support ordinary stop and restart operations.
+  Document a local check that expects 401 for an unauthenticated request to
+  `/mcp`. It shows only that the listener and gate respond, not that key
+  retrieval, authorization, or MCP handling work.
+- **Real-vault mode.** Specify, test with invented notes, and implement an
+  explicit launch mode for a real vault root, through the usual
+  specification, tests, and implementation. Only an explicit configuration
+  value selects it: no default or fallback selects it, and no copy-ready
+  example enables it. Keep the synthetic mode and its manifest guard. The
+  mode's existence does not authorize exposing real notes; Task 9 does that
+  for an exact scope.
+- **VM services.** Run the server and cloudflared in the same VM, communicating
+  over loopback. The origin keeps its loopback-only listener. Run the server
+  as a non-root service account without write permission to the exposed
+  notes. Keep configuration and secrets outside Git, and synchronization of
+  the dedicated checkout outside the server. Both cloudflared and the origin
+  need outbound access: cloudflared for the tunnel, and the origin to fetch
+  signing keys. This task needs no containers or Unraid-specific deployment.
+- **Root and scope.** Configure the root explicitly: the whole checkout or
+  one subtree, with read-only access for the server. Citations are relative
+  to that root. A selection spread across several directories needs its own
+  design before dependent work. The exact scope is decided before activation
+  in Task 9; preparing the services does not need it. Because the root can be a
+  subtree, update the local vault checkout entry in the
+  [glossary](../CONTEXT.md) and the root description in the [Phase 1
+  contract](phase-1-contract.md#configuration-and-common-policy), which now
+  equate the root with the whole checkout.
+- **Forwarded Host.** Set the Host that cloudflared forwards explicitly in the
+  service configuration, and check that the gate accepts it, reusing the
+  existing Host tests rather than adding another set of cases.
+- **Edge cache.** Review the Cloudflare cache configuration for Uvicorn's own
+  400 and 500 responses, which the application's `no-store` guarantee does
+  not cover, and record the review. The live behavior stays unobserved until
+  Task 9.
+- **Runbook.** Add a short runbook section to the [usage guide](usage.md):
+  start, stop, and emergency stop; synchronization; update and rollback;
+  credentials; and troubleshooting.
 
-Validate with invented notes and offline tests. This task needs no additional
-account and no live public route. Unless the vault owner authorizes a live
-synthetic route during this task, Task 9 step 1 makes the live observations.
+Not in this task: rate limiting, until a need is demonstrated, and key-cache
+resilience beyond the tested behavior.
+
+Validate locally, without a public route, a Cloudflare account, or live keys:
+
+- Automated tests use invented notes, invented keys, and injected key
+  fetching. They cover each new bound, the diagnostic categories without
+  sensitive content, and the real-vault mode.
+- Check the prepared service setup locally with invented notes: the non-root
+  server cannot write to them, the origin listens only on loopback, and
+  startup, stop, and restart work. An unauthenticated request from the VM
+  returns 401 with `Cache-Control: no-store`. These probes carry no assertion,
+  so they cause no key fetch. Live tunnel connectivity is checked in Task 9.
+- Review the VM service configuration for both outbound paths. The
+  review does not prove that the provider's endpoints are reachable; Task 9
+  verifies live key retrieval.
 
 Acceptance:
 
 - The Task 7 offline tests and the stdio tests still pass; the same core
   behavior works through both transports.
-- The runtime cannot write to the mounted vault, and the origin port is not
-  published on the host. Restart and reconnection work without corrupting data
-  or requiring a new index.
-- Limits and safe logging apply to remote requests.
-- The packaged configuration states the expected forwarded Host, offline
-  tests show that the gate accepts it, and the edge cache review is recorded.
-- Exact launch and deployment configuration, synthetic verification evidence,
-  and rollback instructions are ready before the deployment approval for
-  Task 9.
+- The new bounds and diagnostics apply to remote requests, and the logs stay
+  free of sensitive content.
+- The real-vault mode is tested with invented notes, and the synthetic mode
+  and its guard still work.
+- The service checks above pass: the server cannot write to the exposed
+  notes, the origin listens only on loopback, and restart works without
+  corrupting data or requiring a new index.
+- The service configuration states the forwarded Host, a test shows that the
+  gate accepts it, and the edge cache review is recorded.
+- The launch and deployment configuration, synthetic verification evidence,
+  and runbook, including rollback, are ready before the deployment approval
+  for Task 9.
 
 ## Task 9 — Deploy and enable real-vault use
 
 Depends on: Task 8 and the vault owner's authorization to deploy the
-synthetic service where that authorization is still needed. Activating the
-real vault scope needs the separate authorization in step 5.
+synthetic service where that authorization is still needed. Activating a real
+vault scope needs the separate authorization in step 5.
 
-Deploy the prepared service on Unraid with the synthetic vault, then work in
-this order. Before step 6, separately specify, test, implement, and review the
-real-vault launch path and its startup conditions. Preserve the synthetic
-guard for synthetic mode; the current launcher cannot activate real notes.
+Install the Task 8 service configuration in the VM with the invented notes,
+then work in this order. Record anything that cannot be observed as
+unobserved, not as passed.
 
-1. Recheck Managed OAuth's status and the provider documentation. Then, with
-   the synthetic vault, repeat these live probes and record the results.
-   Capturing the refresh exchange and repeating the full retrieval
-   evaluation are not required.
+1. Recheck Managed OAuth's status and the provider documentation that the
+   route depends on. Then, with the invented notes, make these live probes
+   and record the results:
 
-   - From inside the runtime network, because the host publishes no origin
-     port, an unauthenticated request to the origin returns 401 with
-     `Cache-Control: no-store`.
+   - From the VM, an unauthenticated request to the loopback origin returns
+     401 with `Cache-Control: no-store`.
    - An unauthenticated request to the public endpoint returns 401 with the
      OAuth challenge.
    - Discovery and the vault owner's OAuth connection succeed.
-   - A read returns a correctly cited answer.
+   - A read returns a correctly cited answer. The first authorized call after
+     an origin start shows that the origin retrieved the signing keys, and the
+     diagnostics show no key-retrieval failure.
    - Tool access continues after a reconnect. After a period longer than the
      access-token lifetime, with no use or reconnect, a fresh read in a new
      chat succeeds.
    - Stopping the origin or cloudflared, each while the other keeps running,
      removes access, and restarting it restores access.
-   - The origin accepts the forwarded Host. Record whether the edge caches
-     Uvicorn-generated 400 or 500 responses.
+   - The origin accepts the configured forwarded Host. If practical, record
+     whether the edge caches Uvicorn-generated 400 or 500 responses.
    - If another identity is available, it is refused. Otherwise, the live
      denial stays unverified, as the [implementation
      plan](implementation-plan.md#progressive-milestones) notes.
 
-2. Test shutdown from Cloudflare as the [web access
-   plan](web-access.md#shutdown-and-revocation) describes: disable the
-   tunnel's public-hostname route while Access stays in place, and record the
-   configuration behavior, the effect on active connections, and the observed
-   time to take effect. If this does not work reliably, choose and verify
-   another supported routing shutdown.
-3. Measure whether and when a policy change stops an already issued token
-   from working.
+   Capturing a refresh-grant exchange and repeating the full retrieval
+   evaluation are not required.
+2. Verify one usable emergency-stop procedure on the target runtime, and
+   state the management access it depends on. A Cloudflare-side route
+   shutdown is optional only if the vault owner accepts that dependency; the
+   owner has not accepted it yet. Otherwise, also verify the route shutdown
+   that the [web access plan](web-access.md#shutdown-and-revocation)
+   describes.
+3. Do not count a policy change as a stop. Measuring when a policy change
+   stops an already issued token is optional; without that measurement,
+   assume that issued tokens stay valid until they expire.
 4. Revisit data handling for the chosen client account, including the
    personal ChatGPT Plus account. If the account is a lab or workspace
    account, also check its permissions and governance.
-5. Immediately before activating the real vault scope, obtain the vault
-   owner's explicit authorization, informed by the results above and the
-   dependencies disclosed in the [web access
+5. State the exact real scope to expose: the whole dedicated checkout or one
+   subtree of it. Immediately before activation, obtain the vault owner's
+   explicit authorization for that scope, informed by the results above and
+   the dependencies disclosed in the [web access
    plan](web-access.md#trust-boundary-and-data-handling). Skip this request if
-   the vault owner has already authorized this exact activation. No separate
-   Beta approval is needed.
-6. Activate and mount the real vault scope through explicit configuration,
-   and repeat representative questions.
+   the vault owner has already authorized this exact activation. Approval of
+   plans, code, or the synthetic deployment does not authorize it. No
+   separate Beta approval is needed.
+6. Activate the real-vault mode for the authorized scope through explicit
+   configuration, with read-only access for the server. The vault owner tries
+   a few representative questions and checks the answers and citations.
+   Investigate capacity or performance only if errors or unacceptable delays
+   occur. Keep notes, questions, and answers private; record only a
+   sanitized outcome. Check that restart and an ordinary synchronization
+   recover cleanly.
+7. Check the runbook against the target runtime and correct it.
 
 Keep credentials and private excerpts out of the repository.
 
 Acceptance:
 
-- ChatGPT discovers the tools, finds a known note, reads its relevant content,
-  and provides a useful source citation.
-- The route shutdown, policy-revocation, and data-handling results are
-  recorded before the real vault scope is enabled.
+- ChatGPT discovers the tools, finds a known note in the authorized scope,
+  reads its relevant content, and provides a useful source citation.
+- The emergency stop is verified and its access dependency stated, and the
+  Cloudflare-side route shutdown is verified unless the vault owner accepted
+  that dependency. These results and the data-handling review are recorded
+  before the real scope is enabled.
 - Restart and ordinary synchronization recover cleanly.
-- Record the operational runbook: start/stop, route shutdown, update/rollback,
-  sync, credential rotation, and connection troubleshooting.
+- The runbook matches the target runtime.
 - Declare completion for the tested client only. Connecting the other provider
   is a follow-up with its own connectivity/authentication checks.
+
+Task 9 reaches the planned completion point; later work is optional.
+
+## Follow-up — NFC-equivalent matching
+
+Normally follows Task 9; an observed retrieval failure that blocks use can
+justify earlier work. Status: not started.
+
+This is the first evidence-backed retrieval improvement: the [retrieval
+evaluation](retrieval-evaluation.md#deferred-nfc-equivalent-matching)
+recorded false no-answer results when decomposed text was the only way to a
+note (E8, J6). Specify it before implementation, as the [implementation
+plan](implementation-plan.md#deferred-retrieval-decisions) describes. Keep
+snippets from the original text unless that specification decides otherwise;
+snippets from normalized text are an option for that decision, not an agreed
+change. If the work changes the match stage, it may consider an in-process
+matcher under the conditions in [existing implementation
+choices](implementation-plan.md#existing-implementation-choices). Rerun the
+affected evaluation questions, and replace their baseline when the change is
+adopted.
 
 ## Follow-up — Review orchestration efficiency
 

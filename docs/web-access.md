@@ -1,13 +1,14 @@
 # Web access plan
 
 Status: agreed design, decided 2026-10-02; local HTTP contract updated
-2026-10-04; live-trial findings recorded 2026-10-05. The protected loopback
-HTTP entry point and its synthetic-only launcher are implemented beside
-stdio, and the synthetic ChatGPT trial through this route succeeded.
-Real-vault HTTP support and permanent deployment remain future work. The
-[implementation plan](implementation-plan.md#web-access-route) explains why
-this route was chosen, and [Tasks 7–9](implementation-tasks.md) track its
-progress.
+2026-10-04; live-trial findings recorded and planned runtime updated
+2026-10-05. The protected loopback HTTP entry point and its synthetic-only
+launcher are implemented beside stdio, and the synthetic ChatGPT trial
+through this route succeeded. The real-vault mode, the request bounds, and
+the permanent VM services described in [runtime isolation](#runtime-isolation)
+are planned for Task 8 and not implemented. The [implementation
+plan](implementation-plan.md#web-access-route) explains why this route was
+chosen, and [Tasks 7–9](implementation-tasks.md) track its progress.
 
 ## Route
 
@@ -21,7 +22,7 @@ Cloudflare edge
     - forwards the request with a signed Cf-Access-Jwt-Assertion header
     | Cloudflare Tunnel: encrypted connection opened outbound by cloudflared
     v
-cloudflared (at first on the same Ubuntu VM and network namespace)
+cloudflared (in the same Ubuntu VM as the server)
     | plain HTTP on loopback
     v
 knowledge-server HTTP entry point (adapter layer)
@@ -38,14 +39,16 @@ OAuth](https://developers.cloudflare.com/cloudflare-one/access-controls/applicat
 requires; the domain, hostname, and identity provider for the owner's login
 are provisioning choices. Because cloudflared connects outbound, the router
 needs no inbound port forwarding. Tailscale remains the private
-administration network and is not part of this route. The first trial runs
-on the Ubuntu VM; permanent hosting is on Unraid.
+administration network and is not part of this route. The synthetic trial ran
+inside the Ubuntu VM, which is also the target for permanent services. Unraid
+hosts the VM and requires no application-specific configuration.
 
 ## Trust boundary and data handling
 
 TLS ends at the Cloudflare edge, and the tunnel encrypts traffic between
-Cloudflare and cloudflared. At first, the last hop is plain HTTP on loopback,
-with cloudflared and the server in the same network namespace on the VM.
+Cloudflare and cloudflared. The last hop is plain HTTP on loopback, with
+cloudflared and the server running in the same VM, both in the trial and in
+the planned permanent setup.
 Cloudflare therefore handles decrypted requests and responses, including
 queries and note excerpts, and keeps its own operational logs. ChatGPT sends
 tool results to OpenAI's models, as local hosts send them to their providers.
@@ -57,8 +60,8 @@ The Task 7 synthetic trial confirmed compatibility between ChatGPT, Managed
 OAuth, and the SDK's HTTP transport for the tested configuration. Task 9 in
 the [implementation tasks](implementation-tasks.md) rechecks these
 dependencies and the chosen client account's data handling before the vault
-owner explicitly authorizes the real vault scope. That authorization covers
-these disclosed dependencies and the account choice; no separate Beta
+owner explicitly authorizes the exact real vault scope. That authorization
+covers these disclosed dependencies and the account choice; no separate Beta
 approval is needed.
 
 ## Edge configuration
@@ -269,9 +272,10 @@ directory afterwards. Keep the trial directory dedicated to the invented
 notes for as long as it is in use.
 
 The generic HTTP application receives an explicit path policy and knows no
-fixture location or environment root. There is no real-vault launcher. Task 9
-needs a separately specified launch path, and only its explicit configuration
-may activate the real vault scope.
+fixture location or environment root. There is no real-vault launch mode yet.
+Task 8 specifies and tests one with invented notes and keeps this guard for
+the synthetic mode. Only explicit configuration selecting the real-vault mode,
+used in Task 9 for an authorized scope, may activate real notes.
 
 ### Listener and request gate
 
@@ -373,36 +377,103 @@ and tracebacks. Uvicorn access logs are disabled. Logs therefore omit tokens,
 raw headers, claims, identity values or hashes, IP addresses, paths, query
 strings, request bodies, tool arguments including queries, results, and note
 content. Stdio keeps its own logging setup. Sentinel tests check these
-restrictions.
+restrictions. Task 8 adds fixed diagnostic categories under the same
+restrictions, as [diagnostics and health](#diagnostics-and-health) describes.
 
 ## Shutdown and revocation
 
 Stopping cloudflared or the origin is the local shutdown. Both were tested
 independently in the synthetic trial: ChatGPT lost access, then recovered
-after the stopped process restarted. Before real-vault use, test disabling
-the tunnel's public-hostname route from Cloudflare while Access protection
-stays in place, and record the configuration behavior, the effect on active
-connections, and the observed time to take effect. If this route cannot be
-disabled reliably, choose and verify another supported routing shutdown. Do
-not count DNS deletion or credential rotation as immediate shutdown without
-proof.
+after the stopped process restarted. A local stop works only while its
+management access, such as access to the host, is available.
+
+Before real-vault use, verify one usable emergency-stop procedure on the
+target runtime, and state the management access it depends on. A
+Cloudflare-side route shutdown is optional only if the vault owner accepts
+that dependency; the owner has not accepted it yet. Otherwise, also test
+disabling the tunnel's public-hostname route from Cloudflare while Access
+protection stays in place, and record the configuration behavior, the effect
+on active connections, and the observed time to take effect. If this route
+cannot be disabled reliably, choose and verify another supported routing
+shutdown. Do not count DNS deletion or credential rotation as immediate
+shutdown without proof.
 
 Never disable or delete Access protection as a kill switch, because removing
-the gate does not stop routing. A dedicated, tested deny-all policy may add
-protection, but do not assume it acts at once. Managed OAuth reevaluates
-policy when a token is refreshed, so a policy change may not revoke issued
-tokens immediately; measure and record the actual behavior before real-vault
-use.
+the gate does not stop routing. A policy change alone is not a verified stop.
+A dedicated, tested deny-all policy may add protection, but do not assume it
+acts at once. Managed OAuth reevaluates policy when a token is refreshed, so a
+policy change may not revoke issued tokens immediately. Measuring that delay
+is optional; without a measurement, assume that issued tokens stay valid until
+they expire.
 
 ## Runtime isolation
 
-On Unraid, the server and cloudflared run in an isolated container network
-with no published origin port on the host, while cloudflared keeps the
-outbound access it needs. The server runs as a non-root process with a
-read-only mount of a dedicated local vault checkout or read-only materialized
-snapshot; synchronization stays outside the MCP process. Secrets and
-configuration stay outside Git. Request, rate, and concurrency limits get
-values chosen and justified during implementation.
+Status: planned for Task 8 and not implemented. The current launcher serves
+the invented notes only.
+
+The service has one user, the vault owner, who maintains it by hand;
+availability is best effort. These assumptions keep the runtime simple. They
+do not relax the assertion, path, key-cache, or logging protections above.
+
+### VM services and network
+
+The server and cloudflared run as ordinary services in the same Ubuntu VM,
+communicating over loopback. The origin listens only on `127.0.0.1`. Use the
+VM's service manager for startup at boot, stop, and restart. No containers or
+Unraid-specific deployment configuration are needed.
+
+The server runs as a non-root service account without write permission to the
+exposed notes. Configuration and secrets stay outside Git. A dedicated local
+vault checkout is synchronized outside the MCP process. Choose filesystem
+permissions that let the service read the notes while keeping synchronization
+under the vault owner's control.
+
+Both cloudflared and the origin need outbound access: cloudflared for the
+tunnel, and the origin to fetch signing keys from the [trusted key
+URL](#assertion-and-key-rules). The service configuration sets the Host that
+cloudflared forwards explicitly, to a value that the gate accepts.
+
+### Exposed scope
+
+The root is explicit configuration. It can be the whole checkout or one
+subtree, with read-only access for the server; tool paths and citations are
+relative to that root. A selection spread across several directories needs
+its own design before dependent work. The exact scope must be known and
+authorized before activation, but preparing the services does not need it.
+
+Task 8 adds an explicit real-vault launch mode, specified and tested with
+invented notes. Only explicit configuration selects it, and the synthetic mode
+and its [guard](#synthetic-trial-guard) remain.
+
+### Request bounds
+
+The gate counts request-body bytes as they arrive and rejects a body over a
+fixed limit before the SDK buffers it; a `Content-Length` check alone does not
+bound a body. Reading the body has a deadline, and a small global bound limits
+concurrent requests. Task 8 chooses the values and records the reasons. These
+bounds cannot stop a filesystem call that a worker thread has already started:
+the [Phase 1 limits](phase-1-contract.md#initial-limits) bound that work, and
+search keeps its own deadline. Rate limiting is deferred until a need is
+demonstrated.
+
+### Diagnostics and health
+
+The [log policy](#logging) gains fixed, content-free categories. They
+include one for failed signing-key retrieval, after which the gate rejects
+the request with 401, and one for internal tool failures, which the client
+receives as tool errors inside HTTP 200 responses.
+
+A local check expects 401 for an unauthenticated request to `/mcp`. That 401
+shows only that the listener and gate respond; it does not show that key
+retrieval, authorization, or MCP handling work. Document service status and
+restart commands in the runbook. No separate health-monitoring system is
+required.
+
+### Edge cache
+
+Task 8 reviews the Cloudflare cache configuration for Uvicorn's own 400 and
+500 responses, which the `no-store` guarantee does not cover. The live
+behavior stays unobserved until Task 9.
 
 ## Contingency
 
