@@ -226,14 +226,7 @@ mode](web-access.md#launch-modes) and the authorization that Task 9 obtains.
    The installed copy changes only at the next `uv sync`, which reinstalls
    the checked-out source. A Python that uv downloads would be in your home
    directory, which the service cannot read.
-3. Copy the sample notes for synthetic mode:
-
-   ```sh
-   sudo cp -R /opt/knowledge-server/tests/fixtures/vault \
-     /srv/knowledge-server-synthetic
-   ```
-
-4. Create the configuration, readable by root and the service account only:
+3. Create the configuration, readable by root and the service account only:
 
    ```sh
    sudo install -d -m 0750 -g knowledge-server /etc/knowledge-server
@@ -243,10 +236,12 @@ mode](web-access.md#launch-modes) and the authorization that Task 9 obtains.
    sudoedit /etc/knowledge-server/config.toml
    ```
 
-   Set `root = "/srv/knowledge-server-synthetic"` and the Access values, as
-   step 3 of the [synthetic trial](#prepare-the-synthetic-http-trial)
-   describes. Keep `mode = "synthetic"`.
-5. Install and start the unit:
+   Set `root = "/opt/knowledge-server/tests/fixtures/vault"`, the sample
+   notes in the installed checkout, and the Access values, as step 3 of the
+   [synthetic trial](#prepare-the-synthetic-http-trial) describes. If you
+   have the configuration from the synthetic trial, copy its Access values.
+   Keep `mode = "synthetic"`.
+4. Install and start the unit:
 
    ```sh
    sudo install -m 0644 /opt/knowledge-server/deploy/knowledge-server.service \
@@ -255,7 +250,7 @@ mode](web-access.md#launch-modes) and the authorization that Task 9 obtains.
    sudo systemctl enable --now knowledge-server
    ```
 
-6. Check the service:
+5. Check the service:
 
    ```sh
    curl -si http://127.0.0.1:8000/mcp
@@ -359,9 +354,9 @@ uv sync --locked --no-dev --no-editable --compile-bytecode \
 ```
 
 If `deploy/knowledge-server.service` changed, install it again with the
-first command of step 5 and run `sudo systemctl daemon-reload`. Then run
+first command of step 4 and run `sudo systemctl daemon-reload`. Then run
 `sudo systemctl restart knowledge-server` and repeat the `curl` check of
-step 6, with the same retry.
+step 5, with the same retry.
 
 **Rollback.** Repeat the update with the recorded revision, including the
 unit file and `daemon-reload` if the unit differs. The server keeps no index
@@ -373,7 +368,10 @@ file in `/etc/cloudflared`. To replace it, rotate it in the dashboard, run
 command; `service install` does not replace an existing service. The vault
 remote key is in your `~/.ssh`. The Access values in
 `/etc/knowledge-server/config.toml` are private identifiers, not
-credentials. No OAuth token is stored in the VM.
+credentials. To change them, edit the file with `sudoedit`, run
+`sudo systemctl restart knowledge-server`, and repeat the `curl` check of
+[Install the server](#install-the-server) step 5.
+No OAuth token is stored in the VM.
 
 **Troubleshooting.** The server log uses the categories that the [log
 policy](web-access.md#logging) defines.

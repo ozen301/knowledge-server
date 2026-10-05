@@ -470,7 +470,7 @@ they expire.
 
 ## Runtime isolation
 
-Status: prepared in Task 8, not yet deployed.
+Status: prepared and checked locally in Task 8; not yet deployed.
 
 The service has one user, the vault owner, who maintains it by hand;
 availability is best effort. These assumptions keep the runtime simple. They
@@ -522,8 +522,8 @@ static file extensions. `/mcp` has no extension, MCP requests use `POST`, and
 statuses other than 200, 206, 301, 302, 303, 404, and 410 are not cached by
 default. Uvicorn's own 400 and 500 responses therefore stay uncached even
 without `Cache-Control: no-store`, unless a Cache Rule or Page Rule such as
-"cache everything" covers the MCP hostname. The vault owner's confirmation
-that no such rule exists is pending. The live behavior stays unobserved until
+"cache everything" covers the MCP hostname. The vault owner confirmed on
+2026-10-05 that no such rule exists. The live behavior stays unobserved until
 Task 9.
 
 ## Contingency
