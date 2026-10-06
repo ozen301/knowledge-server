@@ -1,9 +1,10 @@
 # Roadmap
 
-Status: the first version is complete as of 2026-10-05, and no task is in
-progress. This document lists optional later work, the constraints on it, and
-how to define and finish a task. The [design decisions](design-decisions.md)
-record the decisions that later work must preserve.
+Status: the first version is complete as of 2026-10-05, and reviewed write
+proposals as of 2026-10-07; no task is in progress. This document lists
+optional later work, the constraints on it, and how to define and finish a
+task. The [design decisions](design-decisions.md) record the decisions that
+later work must preserve.
 
 ## How to add work
 
@@ -16,11 +17,10 @@ or backend abstractions in advance.
    the specification changes, and the acceptance checks.
 2. Implement and review one task at a time, as one reviewable diff, with the
    workflow in [AGENTS.md](../AGENTS.md).
-3. When the task is complete, remove its entry. Update the README features,
-   the specifications, the guides, and the architecture overview as the
-   change requires, and add essential evidence to the design decisions'
-   [verification](design-decisions.md#verification) section. Git keeps the
-   history.
+3. When the task is complete, remove its entry. Update the README features, the
+   specifications, the guides, and the architecture overview as the change
+   requires, and record limitations that the validation leaves open in the
+   [design decisions](design-decisions.md). Git keeps the history.
 
 Revise the design decisions when evidence changes a decision.
 
@@ -37,7 +37,7 @@ None.
 | Additional formats, likely text-based PDF first | Needed sources exist outside Markdown; hits must remain traceable to the original file and page or section |
 | Semantic retrieval with multilingual embeddings | The saved evaluation shows misses that lexical search cannot fix; exact search and CPU-only operation must remain useful |
 | Additional collections | A second explicitly configured root is needed; source identity and filtering must stay consistent across tools and caches |
-| Controlled writing | Writing becomes a need; proposals or an inbox with vault-owner review must not mutate canonical notes through the read-only service |
+| Easier review of proposals | Reviewing and merging proposals by hand in the VM checkout takes too much effort; notes must still change only through the vault owner's review, and the service must still write only in the inbox |
 
 SQLite FTS5, document converters, and vector stores are candidates, not
 current dependencies. Choose them only after the repeatable evaluation

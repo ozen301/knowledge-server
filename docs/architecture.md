@@ -15,9 +15,12 @@ notes and directories by their path in the vault, so the agent can cite its
 source.
 
 The server reads files from the local vault checkout and nothing else. It
-never writes to notes, never runs Git commands or searches Git history, and
+never changes a note, never runs Git commands or searches Git history, and
 never runs code or follows links found inside a note. Note text is data that
-the server returns, not instructions for the server.
+the server returns, not instructions for the server. Over HTTP, when its
+configuration enables them, two write tools save new notes and edits as
+proposals in the inbox, `inbox/` under the root; the vault owner reviews and
+merges them.
 
 ## The big picture
 
@@ -32,7 +35,7 @@ MCP host (for example, a desktop AI client)
     | starts the server as a subprocess; messages go over stdin/stdout
     v
 MCP adapter
-    adapter/server.py  - four tool wrappers, schemas, error translation
+    adapter/server.py  - tool wrappers, schemas, error translation
     __main__.py        - startup checks and stdio launch
     adapter/http*.py   - protected HTTP entry point and its launcher
     |
@@ -41,6 +44,7 @@ Knowledge core
     core/paths.py      - which paths are visible
     core/reader.py     - read, list, info, and the shared note loader
     core/search.py     - literal search through ripgrep
+    core/writer.py     - write proposals in the inbox
     core/models.py, core/limits.py - shared data types and limits
     |
     v
@@ -61,15 +65,16 @@ The layers are separate for these reasons:
 - **The core owns every decision about the vault.** Which files are visible,
   how much text is returned, and which error applies are decided in the core.
   The adapter only translates between MCP messages and core calls. Because of
-  this, all four tools follow the same rules.
-- **The vault is only read.** The vault owner synchronizes the local vault
-  checkout with Git outside the server.
+  this, all tools follow the same rules.
+- **The vault is only read.** The server writes only in the inbox. The vault
+  owner synchronizes the local vault checkout with Git and merges proposals
+  outside the server.
 
 ## Components
 
 ### Models, errors, and limits
 
-`core/models.py` defines one request model and one result model for each tool,
+`core/models.py` defines a request model and a result model for each tool,
 for example `ReadRequest` and `ReadResult`. These Pydantic models reject
 unknown fields and wrong types. The adapter builds the MCP tool schemas from
 them, so their field descriptions are written for tool callers.
@@ -117,6 +122,25 @@ same checks through `load_note_text()`, which also counts each chunk against
 the search's byte budget and deadline. Because both use the same code, search
 and read accept the same notes.
 
+### Write proposals: `core/writer.py`
+
+`propose_note()` and `propose_edit()` implement the two write tools. They
+check paths with `PathPolicy`: `probe_file()` checks a path that need not
+exist yet, and `resolve()` checks the note that an edit starts from, which
+`load_note_bytes()` then loads with the shared loader. The proposal for the
+vault path `P` is `inbox/P`. The first edit of a vault note also writes a
+base copy of its bytes to `inbox/.base/P`, which the vault owner merges
+against; the hidden-name rule keeps it out of every tool.
+
+An edit applies exact text replacements to the note's text as the read tools
+see it, and writes the result back with the note's BOM and line endings.
+Each file is written as a hidden temporary file and then moved into place,
+through directory descriptors opened without following symlinks. One lock
+serializes all writes of the process, so a hash check and the write that
+depends on it cannot interleave with another write. The
+[contract](tool-contract.md#write-proposals) gives the rules and their
+order.
+
 ### Literal search: `core/search.py`
 
 `search_notes()` implements `knowledge_search`: it finds lines that contain
@@ -154,10 +178,12 @@ message to stderr and exits with status 1; otherwise it serves the tools over
 stdio until the host closes stdin. Logs go to stderr, so stdout carries only
 MCP messages.
 
-`create_server()` in `adapter/server.py` registers the four tools on an SDK
-`MCPServer`, with the request and result models' schemas as input and output
-schemas. For each call, the request model validates the raw arguments, and the
-tool calls one core function. Read, list, and info run in a worker thread;
+`create_server()` in `adapter/server.py` registers the four read tools on an
+SDK `MCPServer`, and the two write tools when its caller enables them; only
+the HTTP launcher does. The request and result models' schemas become the
+input and output schemas. For each call, the request model validates the raw
+arguments, and the tool calls one core function. Read, list, info, and the
+write tools run in a worker thread;
 search is awaited directly, so cancelling the request kills its ripgrep
 process. A `KnowledgeError` becomes a tool error with the code and message
 ([format](tool-contract.md#error-and-change-behavior)). Any other exception
@@ -173,11 +199,11 @@ so check the adapter when upgrading the SDK.
 
 ### Protected HTTP entry point
 
-The `knowledge-server-http` command is a second way to reach the same four
-tools: over HTTP instead of stdio. It listens on `127.0.0.1` (loopback), so
-only programs in the same network namespace, such as others on the same
-machine, can connect. The [HTTP contract](http-contract.md) specifies its
-exact checks, and the [design
+The `knowledge-server-http` command is a second way to reach the same tools:
+over HTTP instead of stdio. Only this entry point can serve the write tools. It
+listens on `127.0.0.1` (loopback), so only programs in the same network
+namespace, such as others on the same machine, can connect. The [HTTP
+contract](http-contract.md) specifies its exact checks, and the [design
 decisions](design-decisions.md#why-this-remote-route) explain the remote route
 and the VM services.
 
@@ -206,7 +232,7 @@ HTTP request
     -> gate: Host, then Origin, then Access assertion
     -> bounds: requests in progress, then body size and read time
     -> SDK Streamable HTTP at /mcp (stateless, JSON responses)
-    -> the same four tools -> knowledge core -> root
+    -> the same tools -> knowledge core -> root
 ```
 
 - The `Host` header must name the configured public hostname or a loopback
@@ -239,7 +265,9 @@ same validation in `config.py`. The mode has no default:
   while the server runs.
 - **Vault mode** serves a local vault checkout or one subtree of it. The
   launcher refuses to start if it can write to the root, which catches a
-  launch outside the read-only service configuration.
+  launch outside the read-only service configuration. With
+  `write_proposals = true`, it also refuses to start unless it can write to
+  the inbox.
 
 The code is in `adapter/`:
 
@@ -260,10 +288,11 @@ The code is in `adapter/`:
   all other diagnostics, which could contain tokens, headers, queries, or
   note text.
 
-`deploy/` holds the server's systemd unit, which runs it as a dedicated
-account with a read-only view of the file system, and an example
-configuration. The [deployment guide](deployment.md) installs them with
-cloudflared and the vault synchronization.
+`deploy/` holds the server's systemd unit, which runs it as a dedicated account
+with a read-only view of the file system, and an example configuration. The
+[guide for web clients](use-with-web-clients.md) installs them with cloudflared
+and the vault synchronization. For write proposals, it adds a drop-in that
+makes only the inbox writable.
 
 The [HTTP contract](http-contract.md) gives the exact settings, checks, and
 limits, and its [owner identity](http-contract.md#owner-identity) section
@@ -305,7 +334,7 @@ third, the core limits what the request can read:
 +------------------------------------------------+
 | ZONE 3: KNOWLEDGE CORE                         |
 |                                                |
-| reader.py, search.py                           |
+| reader.py, search.py, writer.py                |
 +-----------------------+------------------------+
                         |
                         |  PathPolicy, content and resource limits
@@ -334,9 +363,10 @@ Passing one check does not skip the next:
    tool's request model, so the core receives a typed request and never sees
    HTTP headers, tokens, or raw MCP arguments.
 4. **Files.** A valid request still gets no general file access. The core
-   offers only the four read-only operations, `PathPolicy` decides which
-   paths are visible, and `reader.py` and `search.py` enforce the content
-   and resource limits.
+   offers only the four read operations and the two proposal writes, which
+   write only in the inbox. `PathPolicy` decides which paths are visible,
+   and `reader.py`, `search.py`, and `writer.py` enforce the content and
+   resource limits. The service unit limits writes to the inbox as well.
 
 On the stdio route, the vault owner's MCP host starts the server, so there is
 no authentication; argument validation and the file limits are the same as
@@ -371,14 +401,15 @@ follow a symlink even after the policy check has passed.
 
 ## Where to go next
 
-- [Usage guide](usage.md): connecting the server to a local MCP host.
-- [Deployment guide](deployment.md): setting up and operating the ChatGPT
-  route.
+- [Use with local MCP hosts](use-with-local-hosts.md): connecting the
+  server to a local MCP host, and how the tools behave.
+- [Use with web clients](use-with-web-clients.md): setting up and operating
+  the remote route for ChatGPT and Claude.ai.
 - [Tool contract](tool-contract.md): exact tool behavior, limits, and error
   codes.
 - [HTTP contract](http-contract.md): the HTTP entry point's exact checks,
   limits, and logging.
 - [Design decisions](design-decisions.md): why the server works as it does,
-  the remote route and its trust boundary, and what is verified.
+  the remote route, and its trust boundary.
 - [Roadmap](roadmap.md): optional later work and how to start it.
 - [Repository guide](../AGENTS.md): development workflow and conventions.

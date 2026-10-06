@@ -4,6 +4,7 @@ import argparse
 import logging
 import os
 import shutil
+import stat
 from pathlib import Path
 
 import uvicorn
@@ -14,6 +15,7 @@ from knowledge_server.adapter.http_logging import STARTUP_FORMAT, configure_http
 from knowledge_server.adapter.synthetic import verify_synthetic_root
 from knowledge_server.config import ConfigurationError
 from knowledge_server.core.paths import PathPolicy
+from knowledge_server.core.writer import INBOX
 
 _logger = logging.getLogger("knowledge_server.http")
 
@@ -29,10 +31,12 @@ def main(argv: list[str] | None = None) -> int:
 
     In `synthetic` mode, the root must hold exactly the packaged sample notes.
     In `vault` mode, the process must not be able to write to the root
-    directory. The server then runs until it receives a signal. After SIGINT
-    (Ctrl-C), Uvicorn shuts down gracefully and this function returns zero.
-    After SIGTERM, Uvicorn shuts down gracefully and then re-raises the
-    signal, so the process ends by SIGTERM instead of returning.
+    directory; with write proposals enabled, it must be able to write to the
+    root's inbox, a real directory. The server then runs until it receives a
+    signal. After SIGINT (Ctrl-C), Uvicorn shuts down gracefully and this
+    function returns zero. After SIGTERM, Uvicorn shuts down gracefully and
+    then re-raises the signal, so the process ends by SIGTERM instead of
+    returning.
 
     Args:
         argv: Optional explicit command arguments; None uses process arguments.
@@ -52,12 +56,20 @@ def main(argv: list[str] | None = None) -> int:
         elif os.access(launch.root, os.W_OK):
             _logger.error(STARTUP_FORMAT, "writable-root")
             return 1
+        elif launch.write_proposals and not _inbox_writable(launch.root):
+            _logger.error(STARTUP_FORMAT, "inbox")
+            return 1
         policy = PathPolicy(launch.root)
         ripgrep = shutil.which("rg")
         if ripgrep is None:
             _logger.error(STARTUP_FORMAT, "missing-ripgrep")
             return 1
-        app = create_http_app(policy, launch.http, ripgrep=ripgrep)
+        app = create_http_app(
+            policy,
+            launch.http,
+            ripgrep=ripgrep,
+            write_proposals=launch.write_proposals,
+        )
         uvicorn.run(
             app,
             host="127.0.0.1",
@@ -83,6 +95,16 @@ def main(argv: list[str] | None = None) -> int:
         _logger.error(STARTUP_FORMAT, "runtime")
         return 1
     return 0
+
+
+def _inbox_writable(root: Path) -> bool:
+    """Return whether the root's inbox is a real directory the process can write."""
+    inbox = root / INBOX
+    try:
+        mode = inbox.lstat().st_mode
+    except OSError:
+        return False
+    return stat.S_ISDIR(mode) and os.access(inbox, os.W_OK | os.X_OK)
 
 
 if __name__ == "__main__":

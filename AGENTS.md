@@ -145,9 +145,9 @@ Conventions:
 - Avoid filler and canned conclusions such as "leverage," "it's worth noting,"
   "Bottom Line," and "In short."
 - Define planned work as tasks in `docs/roadmap.md`. When a task is complete,
-  remove its entry, summarize new capabilities in the README features, and
-  record essential validation evidence in the verification section of
-  `docs/design-decisions.md`.
+  remove its entry and summarize new capabilities in the README features.
+  Record a limitation that the validation leaves open, such as behavior not
+  observed live, with the decision it concerns in `docs/design-decisions.md`.
 - Before drafting, identify the reader's need and choose one primary document
   for each topic. Match the detail to that document's role; summarize and link
   elsewhere. Draft from the final outcome, not the conversation or work log.

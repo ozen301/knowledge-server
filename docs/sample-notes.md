@@ -10,8 +10,9 @@ vault owner's real notes:
 - The HTTP launcher's synthetic mode serves only an exact copy of them,
   checked against `src/knowledge_server/adapter/synthetic-vault.json`. When a
   note changes, update that manifest in the same change.
-- The [usage](usage.md#check-the-connection) and
-  [deployment](deployment.md#troubleshooting) guides use one of them for a
+- The guides for [local MCP
+  hosts](use-with-local-hosts.md#check-the-connection) and [web
+  clients](use-with-web-clients.md#troubleshooting) use one of them for a
   connection check.
 
 The notes imitate real ones: setup notes, research notes, a long note of 245

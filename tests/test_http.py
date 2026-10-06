@@ -807,6 +807,27 @@ def test_explicit_launch_configuration_and_guard(
             load_launch_config(path)
 
 
+def test_write_proposals_setting(tmp_path: Path) -> None:
+    """Only `vault` mode can enable the write tools, with a boolean."""
+    root = tmp_path / "invented"
+    shutil.copytree(FIXTURES, root)
+    path = tmp_path / "config.toml"
+    path.write_text(_config_text(root, "vault"), encoding="utf-8")
+    assert load_launch_config(path).write_proposals is False
+    path.write_text(
+        _config_text(root, "vault") + "write_proposals = true\n", encoding="utf-8"
+    )
+    assert load_launch_config(path).write_proposals is True
+    for text in (
+        _config_text(root, "synthetic") + "write_proposals = true\n",
+        _config_text(root, "vault") + 'write_proposals = "true"\n',
+        _config_text(root, "vault") + "write_proposals = 1\n",
+    ):
+        path.write_text(text, encoding="utf-8")
+        with pytest.raises(ConfigurationError):
+            load_launch_config(path)
+
+
 @pytest.mark.parametrize("change", ["modify", "extra", "missing", "symlink", "fifo"])
 def test_synthetic_guard_rejects_changed_scope(tmp_path: Path, change: str) -> None:
     """The startup check rejects changed, extra, or missing notes, links, and FIFOs."""
@@ -1629,3 +1650,50 @@ def test_tool_failure_event(
     assert _events(output) == ["tool-failed"]
     for private in (SENTINEL, "knowledge_read", "RuntimeError", "server.py", "note.md"):
         assert private not in output
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can write to any directory")
+@pytest.mark.parametrize("inbox", ["missing", "file", "symlink", "read-only"])
+def test_vault_mode_with_write_proposals_needs_a_writable_inbox(
+    tmp_path: Path, inbox: str
+) -> None:
+    """The launcher stops with `inbox` unless the inbox is a writable directory.
+
+    The root itself is read-only, so the `writable-root` check passes.
+    """
+    root = tmp_path / "invented"
+    shutil.copytree(FIXTURES, root)
+    target = root / "inbox"
+    if inbox == "file":
+        target.write_text("", encoding="utf-8")
+    elif inbox == "symlink":
+        (tmp_path / "elsewhere").mkdir()
+        target.symlink_to(tmp_path / "elsewhere")
+    elif inbox == "read-only":
+        target.mkdir(mode=0o555)
+    configuration = tmp_path / "config.toml"
+    configuration.write_text(
+        _config_text(root, "vault") + "write_proposals = true\n", encoding="utf-8"
+    )
+    root.chmod(0o555)
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "knowledge_server.adapter.http_main",
+                "--config",
+                str(configuration),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    finally:
+        root.chmod(0o755)
+        if inbox == "read-only":
+            target.chmod(0o755)
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr == "knowledge-server-http startup category=inbox\n"

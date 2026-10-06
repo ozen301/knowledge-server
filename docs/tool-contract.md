@@ -1,10 +1,12 @@
 # Tool contract
 
-Status: agreed implementation contract, updated 2026-10-05. This document
-specifies the four tools, their limits, and their errors. Changes should
-update this document and the corresponding tests together. The protected
-[HTTP entry point](http-contract.md) serves these tools with the same
-behavior.
+Status: agreed implementation contract, updated 2026-10-07. This document
+specifies the four read tools, the two [write tools](#write-proposals), their
+limits, and their errors. Changes should update this document and the
+corresponding tests together. The protected [HTTP entry
+point](http-contract.md) serves the read tools with the same behavior and, when
+its configuration enables them, the write tools. Stdio serves only the read
+tools.
 
 ## Configuration and common policy
 
@@ -16,8 +18,9 @@ behavior.
   symlink may resolve at that point. Never default to the process working
   directory, home directory, or the vault remote. The server reads files
   directly; it does not inspect Git metadata or run Git commands.
-- Root visibility is all non-hidden Markdown notes. Tool arguments cannot
-  expand access beyond the configured root and common policy.
+- Root visibility is all non-hidden Markdown notes, including the proposals
+  in the [inbox](#write-proposals). Tool arguments cannot expand access
+  beyond the configured root and common policy.
 - API paths use `/`, relative to the configured root. Empty string means the
   root for list/search only. Accept spaces and Unicode. Preserve case and
   Unicode spelling; do not URL-decode paths.
@@ -70,9 +73,9 @@ define the resulting codes and the remaining order of checks.
 ## Initial limits
 
 These values are enforced. The [retrieval
-questions](sample-notes.md#known-weaknesses) found no reason to change them.
-Tests may inject smaller limits to exercise boundaries without large or slow
-fixtures.
+questions](sample-notes.md#known-weaknesses) found no reason to change the
+read limits. Tests may inject smaller limits to
+exercise boundaries without large or slow fixtures.
 
 | Setting | Initial value |
 |---|---|
@@ -88,6 +91,8 @@ fixtures.
 | Maximum source bytes per search | 16 MiB |
 | Maximum subprocess output per search | 4 MiB |
 | Maximum immediate entries scanned per directory listing | 10,000 |
+| Maximum text per write request | 256 KiB of UTF-8 |
+| Maximum edits per edit request | 100 |
 
 The filesystem-entry budgets count every directory entry inspected before
 visibility filtering, but excluded directories are not traversed. The
@@ -95,6 +100,15 @@ source-byte budget counts raw bytes actually loaded while validating candidate
 files, including sentinel bytes and bytes from files later skipped, even when
 a later read of the file fails. The subprocess-output budget counts stdout and
 stderr together.
+
+The write-text limit counts the UTF-8 bytes of `content`, or of all `old` and
+`new` texts of an edit request together. JSON escaping can enlarge the text in
+the request. Ordinary Markdown grows little, and non-ASCII characters at most
+triple when written as `\uXXXX`. A text at the limit can exceed the HTTP entry
+point's 1 MiB request body only if the client writes most characters as
+`\uXXXX`; the entry point then returns 413, and nothing is written. The edit
+limit bounds the work of one request, because each edit searches the whole
+note.
 
 ## Tools
 
@@ -106,8 +120,10 @@ domain failures to MCP tool errors with `isError=true`; let the SDK handle
 malformed protocol requests. Arguments that do not match a tool's input schema
 or its bounds, including unknown, missing, or wrongly typed fields, are a
 domain failure with `INVALID_ARGUMENT`, not an SDK validation message. Every
-tool is annotated as read-only, non-destructive, idempotent, and closed-world;
-the annotations describe the tools but do not enforce the policy. [Official tool
+read tool is annotated as read-only, non-destructive, idempotent, and
+closed-world; [write proposals](#write-proposals) gives the write tools'
+annotations. Annotations describe the tools but do not enforce the policy.
+[Official tool
 specification](https://modelcontextprotocol.io/specification/2026-07-28/server/tools),
 [SDK structured
 output](https://py.sdk.modelcontextprotocol.io/servers/structured-output/).
@@ -339,21 +355,136 @@ knowledge_info(path: str)
 - Permissions failures are errors. Modification time is filesystem metadata,
   not a guarantee that every writer preserves timestamps.
 
+### Write proposals
+
+The two write tools save text as proposals in the inbox, the directory
+`inbox/` directly under the root. They never change a file outside the
+inbox: a proposal takes effect only when the vault owner merges it into the
+knowledge vault. Only the HTTP entry point serves them, and only when its
+[configuration](http-contract.md#launch-configuration) enables them.
+
+- **Inbox paths.** The proposal for the vault path `P` is the note
+  `inbox/P`, and there is at most one. The read tools serve the inbox as an
+  ordinary visible directory, so search and listing from the root include
+  it. An edit of a vault note also keeps a base copy of the version it
+  started from at `inbox/.base/P`. The hidden-component rule keeps base
+  copies and temporary files out of every tool.
+- **Path policy.** A path argument follows the common policy for a file: the
+  lexical rules, hidden components, symlinks, special files, and the `.md`
+  suffix, with the same order of checks and the same error codes. A regular
+  file where a directory is needed returns `NOT_A_DIRECTORY`. The tool creates
+  missing directories inside the inbox.
+- **Text.** No text argument may contain NUL, CR, or U+FEFF; LF is the only
+  line break, and a new note can never start with BOM bytes. Text beyond the
+  [write-text limit](#initial-limits) or containing these characters returns
+  `INVALID_ARGUMENT`.
+- **Size.** The bytes written, including a BOM, must fit the readable file
+  size limit, so that every proposal stays within the limit of the read
+  tools. A larger result returns `FILE_TOO_LARGE`.
+- **Writes.** A tool writes a hidden temporary file in the target's directory
+  and then moves it into place, so readers see the old or the new file and
+  never a partial one. One lock serializes all writes of the process, so a
+  hash check and the write that depends on it cannot interleave with another
+  write. A failed request leaves no new proposal behind. The vault owner
+  stops the service while merging, so no write runs during a merge.
+- **Results.** Both tools return `path`, the root-relative path of the
+  proposal (`inbox/P`), and `content_sha256`, the SHA-256 of the bytes
+  written. That is the hash `knowledge_read` reports for the proposal, so a
+  following edit can pass it as `base_sha256` without reading again.
+- **Annotations.** Both tools are annotated as not read-only, not
+  idempotent, and closed-world. `knowledge_propose_note` is non-destructive,
+  because it only adds a file. `knowledge_propose_edit` is destructive,
+  because an edit of a pending proposal replaces its earlier text.
+- **Descriptions.** Both descriptions say that the tool saves a proposal that
+  the user reviews and merges. The description of `knowledge_propose_edit`
+  also says to call it only when the user explicitly asks to change a note
+  and has agreed to the change, never on the agent's own initiative, and to
+  include surrounding lines when a text to replace is not unique. On every
+  transport, the descriptions of `knowledge_search`, `knowledge_read`, and
+  `knowledge_list` say that notes under `inbox/` are unreviewed proposals,
+  not yet part of the vault.
+
+#### knowledge_propose_note
+
+```text
+knowledge_propose_note(path: str, content: str)
+```
+
+- `path` is the vault path that the new note should have, such as
+  `Projects/Plan.md`. A path whose first component is `inbox` returns
+  `INVALID_PATH`. Its parent directories need not exist in the vault, but
+  those that exist must be real directories.
+- An entry at `path` or at `inbox/<path>` returns `ALREADY_EXISTS`. The tool
+  never overwrites: it moves the file into place with an operation that fails
+  if the target exists, so a concurrent writer cannot be replaced either.
+- After those checks, the tool deletes a base copy `inbox/.base/<path>` left
+  from an earlier edit, so a proposal has a base copy exactly when it started
+  from an edit of a vault note.
+- `content` is written as UTF-8 with LF line endings and no BOM. It may be
+  empty.
+
+#### knowledge_propose_edit
+
+```text
+knowledge_propose_edit(path: str, base_sha256: str, edits: list[Edit])
+Edit = {old: str, new: str}
+```
+
+- `path` names a vault note or a proposal:
+  - **A vault note `P`.** If `inbox/P` exists, the result is
+    `PROPOSAL_PENDING`, whose message says to edit the proposal under
+    `inbox/` instead. This holds even when `P` does not exist in the vault,
+    as for a new-note proposal.
+    Otherwise the tool writes the base copy `inbox/.base/P` with the note's
+    raw bytes, replacing any base copy left from an earlier proposal, and
+    then writes the proposal `inbox/P`.
+  - **A proposal `inbox/P`.** The tool replaces the proposal and keeps its
+    base copy. A proposal for a new note has no base copy.
+- `base_sha256` is 64 lowercase hexadecimal characters. It must equal the
+  SHA-256 of the raw bytes that the tool loads from `path`, for example the
+  `content_sha256` of an earlier read; otherwise the result is
+  `STALE_CONTENT`. The tool loads the file with the bounded loader, so an
+  oversized or invalid file returns `FILE_TOO_LARGE` or `INVALID_ENCODING`
+  as for a read.
+- `edits` holds 1 to the [edit limit](#initial-limits) of edits. Each `old`
+  is non-empty; `new` may be empty, which deletes `old`.
+- The edits apply in order to the note's decoded text, as the read tools see
+  it: without a BOM and with CRLF normalized to LF. A note without a final
+  newline has none in this text, although `knowledge_read` ends every
+  returned line with LF; an edit can add one. Each `old` must occur
+  exactly once, counting overlapping occurrences, in the text that the
+  earlier edits produced. No occurrence returns `TEXT_NOT_FOUND`, and more
+  than one returns `TEXT_NOT_UNIQUE`; both messages give the edit's position
+  in `edits`, counted from 1. If any edit fails, nothing is written.
+- The proposal keeps the note's encoding details. It starts with a BOM if
+  the loaded bytes do. If the loaded bytes contain CRLF, every LF of the
+  result is written as CRLF; otherwise LF stays. Bytes that contain both
+  CRLF and an LF without a preceding CR return `MIXED_LINE_ENDINGS`, because
+  either choice would change lines that the edits did not touch.
+
+Checks run in this order: arguments, the path policy except existence,
+`PROPOSAL_PENDING`, existence and the load, `STALE_CONTENT`,
+`MIXED_LINE_ENDINGS`, the edits, and the result size.
+
 ## Error and change behavior
 
 Domain errors have `code` and a short safe `message`. A tool returns a domain
 error as a result with `isError=true` and one text content item that holds
 the JSON object `{"code": "NOT_FOUND", "message": "..."}`; the error result
-has no structured content. Each code has one fixed message, except
-`INVALID_ARGUMENT`: its message names each rejected argument and the values
-that argument accepts, for example `max_results must be an integer from 1 to
-50.` The accepted values come from the request models, so the message follows
-the limits. An unknown argument is not named; the message lists the valid
-arguments instead. No message repeats a value from the request. Codes:
-`INVALID_ARGUMENT`, `INVALID_PATH`, `NOT_FOUND`, `ACCESS_DENIED`,
-`UNSUPPORTED_TYPE`, `NOT_A_FILE`, `NOT_A_DIRECTORY`, `FILE_TOO_LARGE`,
-`INVALID_ENCODING`, `LINE_TOO_LONG`, `SEARCH_LIMIT_EXCEEDED`,
-`DIRECTORY_LIMIT_EXCEEDED`, `SEARCH_FAILED`, `INTERNAL_ERROR`.
+has no structured content. Each code has one fixed message, with two
+exceptions. The message of `INVALID_ARGUMENT` names each rejected argument and
+the values that argument accepts, for example `max_results must be an integer
+from 1 to 50.` The accepted values come from the request models, so the
+message follows the limits. An unknown argument is not named; the message
+lists the valid arguments instead. The messages of `TEXT_NOT_FOUND` and
+`TEXT_NOT_UNIQUE` give the position of the failing edit. No message repeats a
+value from the request. Codes: `INVALID_ARGUMENT`, `INVALID_PATH`,
+`NOT_FOUND`, `ACCESS_DENIED`, `UNSUPPORTED_TYPE`, `NOT_A_FILE`,
+`NOT_A_DIRECTORY`, `FILE_TOO_LARGE`, `INVALID_ENCODING`, `LINE_TOO_LONG`,
+`SEARCH_LIMIT_EXCEEDED`, `DIRECTORY_LIMIT_EXCEEDED`, `SEARCH_FAILED`,
+`ALREADY_EXISTS`, `PROPOSAL_PENDING`, `STALE_CONTENT`, `TEXT_NOT_FOUND`,
+`TEXT_NOT_UNIQUE`, `MIXED_LINE_ENDINGS`, `INTERNAL_ERROR`. The [write
+tools](#write-proposals) define the codes that only they return.
 
 Check path policy before reporting existence so hidden/disallowed paths do not
 become existence probes. Apply these mappings consistently:
@@ -388,8 +519,9 @@ Each operation reads the local vault checkout on a best-effort basis.
 Concurrent edits may affect a read, and search locations can become stale
 before a subsequent call. Read and info derive their content, line counts, and
 hashes from the bounded bytes they load. There is no snapshot guarantee or
-general concurrent-edit detection. Do not cache content between requests.
-Callers can repeat search/read if a note changes.
+general concurrent-edit detection; only an edit proposal checks
+`base_sha256`. Do not cache content between requests. Callers can repeat
+search/read if a note changes.
 
 ## Required behavioral examples
 
@@ -403,3 +535,11 @@ Tests use a temporary synthetic vault and an outside sentinel file, and check
 that no tool reveals hidden or symlinked content. Cover subprocess arguments,
 exit codes, timeout cleanup, and bounded output as well as ordinary search
 success.
+
+Write-tool tests use a temporary inbox and check that nothing outside it
+changes. They cover a new note, an existing target, a path under `inbox/`, a
+first edit with its base copy, an edit of a pending proposal, an edit of a
+vault note that has one, a stale hash, a text to replace that is missing or
+occurs more than once, edits that depend on earlier edits, BOM and CRLF
+preservation, mixed line endings, NUL, CR, or U+FEFF in text, the text, edit,
+and result limits, and reading proposals through the four read tools.

@@ -43,6 +43,9 @@ class Limits:
             stderr together) one search may read.
         max_immediate_directory_entries: Most entries one listing may scan in
             a single directory before it fails with `DIRECTORY_LIMIT_EXCEEDED`.
+        max_write_text_bytes: Most UTF-8 bytes of text in one write request:
+            a new note's content, or all old and new texts of an edit request.
+        max_edits: Most edits in one edit request.
     """
 
     max_file_bytes: int = 1 * 1024 * 1024
@@ -60,6 +63,8 @@ class Limits:
     max_search_source_bytes: int = 16 * 1024 * 1024
     max_search_output_bytes: int = 4 * 1024 * 1024
     max_immediate_directory_entries: int = 10_000
+    max_write_text_bytes: int = 256 * 1024
+    max_edits: int = 100
 
 
 DEFAULT_LIMITS = Limits()

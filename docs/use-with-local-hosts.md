@@ -1,14 +1,15 @@
-# Usage
+# Use with local MCP hosts
 
-This guide explains how to connect knowledge-server to a local MCP host and
-what the server can return. The [README](../README.md#quick-start) has the
-short version, and the [tool contract](tool-contract.md) defines the exact
-tool behavior.
+This guide explains how to connect knowledge-server to a local MCP host, such
+as Claude Code or Codex CLI, over stdio. Its last section, [how the tools
+behave](#how-the-tools-behave), applies to every client. The
+[README](../README.md#quick-start) has the short version, and the [tool
+contract](tool-contract.md) defines the exact tool behavior.
 
 The MCP host starts the server as a subprocess and talks to it over stdin and
-stdout; you do not start it yourself. ChatGPT uses the same tools through a
-separate, protected HTTP service; the [deployment guide](deployment.md) sets
-it up and operates it.
+stdout; you do not start it yourself. Web clients such as ChatGPT use the same
+tools through a separate, protected HTTP service; the [guide for web
+clients](use-with-web-clients.md) sets it up and operates it.
 
 ## Requirements
 
@@ -107,11 +108,14 @@ If the command works by hand but not in the host:
 - **The live working tree.** The server reads the files in the local vault
   checkout as they are now, including uncommitted and untracked notes. An
   edit is visible in the next tool call without a restart. The server does
-  not search Git history or cache content. `KNOWLEDGE_ROOT` is resolved once
-  at startup, so restart the host after moving the vault.
-- **No Git operations.** The server never writes files and never runs Git.
-  You synchronize the local vault checkout with Git yourself. Results during a
-  pull or checkout can mix old and new files; repeat the question afterwards.
+  not search Git history or cache content. The root is resolved once at
+  startup, so restart the host, or the HTTP service, after moving the vault.
+- **No note changes or Git operations.** The server never changes a note and
+  never runs Git. Over stdio it writes no files at all; over HTTP, web clients
+  can save [write proposals](use-with-web-clients.md#enable-write-proposals) in
+  an inbox for you to review. You synchronize the local vault checkout with Git
+  yourself. Results during a pull or checkout can mix old and new files; repeat
+  the question afterwards.
 - **Visible notes only.** All tools see regular files with a `.md` suffix
   (any letter case) in non-hidden directories. They exclude hidden names that
   start with `.`, such as `.git` and `.obsidian`, symlinks, special files, and

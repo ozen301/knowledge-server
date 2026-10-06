@@ -1,4 +1,4 @@
-"""Request and result models for the four tools, and the domain errors.
+"""Request and result models for the tools, and the domain errors.
 
 The models are strict: they reject unknown fields and do not convert values,
 so `"5"` is not accepted where an integer is required. Field descriptions are
@@ -7,6 +7,7 @@ show them.
 """
 
 import json
+from collections.abc import Iterable
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
@@ -31,13 +32,20 @@ class DomainErrorCode(StrEnum):
     SEARCH_LIMIT_EXCEEDED = "SEARCH_LIMIT_EXCEEDED"
     DIRECTORY_LIMIT_EXCEEDED = "DIRECTORY_LIMIT_EXCEEDED"
     SEARCH_FAILED = "SEARCH_FAILED"
+    ALREADY_EXISTS = "ALREADY_EXISTS"
+    PROPOSAL_PENDING = "PROPOSAL_PENDING"
+    STALE_CONTENT = "STALE_CONTENT"
+    TEXT_NOT_FOUND = "TEXT_NOT_FOUND"
+    TEXT_NOT_UNIQUE = "TEXT_NOT_UNIQUE"
+    MIXED_LINE_ENDINGS = "MIXED_LINE_ENDINGS"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
 # Fixed messages keep file paths, note text, and exception details out of
 # responses: an error message never includes the input that caused it.
 # `invalid_argument_message` replaces the INVALID_ARGUMENT message with one
-# that names the rejected arguments, still without their values.
+# that names the rejected arguments, still without their values, and
+# `edit_error` puts the failing edit's position before a TEXT_* message.
 _SAFE_MESSAGES: dict[DomainErrorCode, str] = {
     DomainErrorCode.INVALID_ARGUMENT: "The request arguments are invalid.",
     DomainErrorCode.INVALID_PATH: "The requested path is invalid.",
@@ -52,6 +60,22 @@ _SAFE_MESSAGES: dict[DomainErrorCode, str] = {
     DomainErrorCode.SEARCH_LIMIT_EXCEEDED: "The search exceeded a resource limit.",
     DomainErrorCode.DIRECTORY_LIMIT_EXCEEDED: "The directory exceeds the entry limit.",
     DomainErrorCode.SEARCH_FAILED: "The search could not be completed.",
+    DomainErrorCode.ALREADY_EXISTS: (
+        "A note or proposal already exists at the requested path."
+    ),
+    DomainErrorCode.PROPOSAL_PENDING: (
+        "The note has a pending proposal; edit the proposal under inbox/ instead."
+    ),
+    DomainErrorCode.STALE_CONTENT: (
+        "The file changed since it was read; read it again and repeat the edit."
+    ),
+    DomainErrorCode.TEXT_NOT_FOUND: "The text to replace was not found.",
+    DomainErrorCode.TEXT_NOT_UNIQUE: (
+        "The text to replace occurs more than once; include surrounding lines."
+    ),
+    DomainErrorCode.MIXED_LINE_ENDINGS: (
+        "The note mixes CRLF and LF line endings and cannot be edited."
+    ),
     DomainErrorCode.INTERNAL_ERROR: "An internal server error occurred.",
 }
 
@@ -76,6 +100,20 @@ class KnowledgeError(Exception):
         super().__init__(self.message)
 
 
+def edit_error(code: DomainErrorCode, position: int) -> KnowledgeError:
+    """Return a TEXT_* error whose message names the failing edit.
+
+    Args:
+        code: `TEXT_NOT_FOUND` or `TEXT_NOT_UNIQUE`.
+        position: The edit's position in the request, counted from 1.
+
+    Returns:
+        The error, with a message such as `Edit 3: The text to replace was not
+        found.`
+    """
+    return KnowledgeError(code, f"Edit {position}: {_SAFE_MESSAGES[code]}")
+
+
 def invalid_argument_message(model: type[BaseModel], error: ValidationError) -> str:
     """Describe rejected arguments without repeating any supplied value.
 
@@ -94,7 +132,7 @@ def invalid_argument_message(model: type[BaseModel], error: ValidationError) -> 
     sentences: list[str] = []
     for problem in error.errors():
         location = problem["loc"]
-        if problem["type"] == "extra_forbidden":
+        if problem["type"] == "extra_forbidden" and len(location) == 1:
             sentence = f"Unknown argument. Valid arguments: {', '.join(properties)}."
         elif problem["type"] == "value_error" and not location and "ctx" in problem:
             # Raised by this module's model validators with fixed text.
@@ -120,6 +158,10 @@ def _accepted_values(schema: dict[str, Any]) -> str:
             text += f" from {value['minimum']} to {value['maximum']}"
         elif "minimum" in value:
             text += f" of at least {value['minimum']}"
+    elif value["type"] == "string" and "pattern" in value:
+        text = f"a string matching {value['pattern']}"
+    elif value["type"] == "array" and "maxItems" in value:
+        text = f"a list of {value['minItems']} to {value['maxItems']} items"
     elif value["type"] == "string" and "maxLength" in value:
         text = f"a string of {value['minLength']} to {value['maxLength']} characters"
     elif value["type"] == "string":
@@ -141,6 +183,40 @@ StrictPositiveInt = Annotated[int, Field(strict=True, ge=1)]
 StrictNonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
 
 _PATH_DESCRIPTION = "Path relative to the vault root, using '/' as separator."
+_TEXT_RULE = (
+    "Text must be valid Unicode without NUL, CR, or U+FEFF characters; use LF "
+    "for line breaks."
+)
+_TEXT_LIMIT_KIB = DEFAULT_LIMITS.max_write_text_bytes // 1024
+
+
+def write_text_bytes(texts: Iterable[str]) -> int:
+    """Return the UTF-8 size of a write request's texts, after checking them.
+
+    Args:
+        texts: A new note's content, or every old and new text of an edit.
+
+    Returns:
+        The total size in UTF-8 bytes.
+
+    Raises:
+        ValueError: With a fixed message if a text contains NUL, CR, or
+            U+FEFF, or a lone surrogate that UTF-8 cannot encode.
+    """
+    total = 0
+    for text in texts:
+        if "\x00" in text or "\r" in text or "\ufeff" in text:
+            raise ValueError(_TEXT_RULE)
+        try:
+            total += len(text.encode())
+        except UnicodeEncodeError:
+            raise ValueError(_TEXT_RULE) from None
+    return total
+
+
+def _check_write_text(texts: Iterable[str]) -> None:
+    if write_text_bytes(texts) > DEFAULT_LIMITS.max_write_text_bytes:
+        raise ValueError(f"The text must be at most {_TEXT_LIMIT_KIB} KiB of UTF-8.")
 
 
 class SearchRequest(ContractModel):
@@ -276,6 +352,101 @@ class InfoRequest(ContractModel):
     """Arguments for metadata about one note."""
 
     path: str = Field(strict=True, description=f"Note to inspect. {_PATH_DESCRIPTION}")
+
+
+class ProposeNoteRequest(ContractModel):
+    """Arguments for proposing a new note."""
+
+    path: str = Field(
+        strict=True,
+        description=(
+            "Vault path the new note should have, such as 'Projects/Plan.md', "
+            "using '/' as separator. The proposal is saved at 'inbox/<path>'. "
+            "No note may exist at the path in the vault or the inbox."
+        ),
+    )
+    content: str = Field(
+        strict=True,
+        description=(
+            f"The note's Markdown text, at most {_TEXT_LIMIT_KIB} KiB of UTF-8, "
+            "with LF line breaks."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_text(self) -> ProposeNoteRequest:
+        """Check the content's characters and size.
+
+        Returns:
+            The unchanged request.
+
+        Raises:
+            ValueError: If the content contains NUL, CR, or U+FEFF, or is
+                larger than the write-text limit.
+        """
+        _check_write_text([self.content])
+        return self
+
+
+class TextEdit(ContractModel):
+    """One exact text replacement in a note."""
+
+    old: str = Field(
+        strict=True,
+        min_length=1,
+        description=(
+            "Exact text to replace. It must occur exactly once in the note, as "
+            "the earlier edits left it; include surrounding lines to make it "
+            "unique."
+        ),
+    )
+    new: str = Field(strict=True, description="Replacement text; empty deletes `old`.")
+
+
+class ProposeEditRequest(ContractModel):
+    """Arguments for proposing text replacements in a note."""
+
+    path: str = Field(
+        strict=True,
+        description=(
+            "Note to edit, relative to the vault root: a vault note, or its "
+            "pending proposal under 'inbox/'."
+        ),
+    )
+    base_sha256: str = Field(
+        strict=True,
+        pattern=r"^[0-9a-f]{64}$",
+        description=(
+            "The note's `content_sha256` from knowledge_read or knowledge_info, "
+            "or from the previous proposal result. The edit fails if the note "
+            "has changed since."
+        ),
+    )
+    edits: list[TextEdit] = Field(
+        strict=True,
+        min_length=1,
+        max_length=DEFAULT_LIMITS.max_edits,
+        description=(
+            f"1 to {DEFAULT_LIMITS.max_edits} replacements, applied in order to "
+            "the note text without line numbers; all or none take effect. The "
+            f"old and new texts together are at most {_TEXT_LIMIT_KIB} KiB of "
+            "UTF-8."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_text(self) -> ProposeEditRequest:
+        """Check the characters and total size of all old and new texts.
+
+        Returns:
+            The unchanged request.
+
+        Raises:
+            ValueError: If a text contains NUL, CR, or U+FEFF, or the texts
+                together are larger than the write-text limit.
+        """
+        _check_write_text(text for edit in self.edits for text in (edit.old, edit.new))
+        return self
 
 
 class SearchMatch(ContractModel):
@@ -414,4 +585,21 @@ class InfoResult(ContractModel):
     unreadable_reason: Literal["too_large", "invalid_text"] | None = Field(
         default=None,
         description="Why the note is not readable, or null when it is readable.",
+    )
+
+
+class ProposalResult(ContractModel):
+    """Result of a write proposal."""
+
+    path: str = Field(
+        description=(
+            "The proposal's path relative to the vault root: 'inbox/' followed "
+            "by the vault path."
+        )
+    )
+    content_sha256: str = Field(
+        description=(
+            "SHA-256 of the proposal's file bytes. Pass it as `base_sha256` to "
+            "edit the proposal again."
+        )
     )

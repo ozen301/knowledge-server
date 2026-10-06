@@ -1,7 +1,9 @@
 # knowledge-server HTTP entry point for the Cloudflare Tunnel route. Install
-# and operate it as docs/deployment.md describes.
+# and operate it as docs/use-with-web-clients.md describes.
 # ProtectSystem=strict mounts the whole file system read-only for the
 # process, so it cannot write to the notes even where permissions allow it.
+# To enable write proposals, the guide adds a drop-in that makes only the
+# inbox writable.
 
 [Unit]
 Description=knowledge-server HTTP entry point

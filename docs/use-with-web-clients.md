@@ -1,10 +1,14 @@
-# Deployment and operations
+# Use with web clients
 
-This guide sets up and operates the remote route through which ChatGPT and
-Claude.ai use knowledge-server, and the daily tasks that keep it running. The
-[design decisions](design-decisions.md#why-this-remote-route) explain the
-route, the [HTTP contract](http-contract.md) specifies the server's checks,
-and the [usage guide](usage.md) covers local MCP hosts over stdio.
+This guide sets up and operates the remote route through which web clients,
+ChatGPT and Claude.ai, use knowledge-server: the services in the VM, the
+connectors, write proposals and their review, and the daily tasks that keep
+it running. The [design decisions](design-decisions.md#why-this-remote-route)
+explain the route, and the [HTTP contract](http-contract.md) specifies the
+server's checks. The [guide for local MCP hosts](use-with-local-hosts.md)
+covers stdio; its section on [how the tools
+behave](use-with-local-hosts.md#how-the-tools-behave) applies to web clients
+too.
 
 ```text
 ChatGPT or Claude.ai (via custom connector)
@@ -36,6 +40,7 @@ distribution, also adjust the package installation, the Python path, and, if
 | Server unit | `/etc/systemd/system/knowledge-server.service`, from `deploy/` |
 | cloudflared unit and tunnel token | Created by `cloudflared service install`; the token is in a root-only file in `/etc/cloudflared` |
 | Vault checkout | `/srv/knowledge-vault`, owned by the administrator's account |
+| Inbox for write proposals (optional) | `/srv/knowledge-vault/inbox`, owned by the service account, and the unit drop-in `/etc/systemd/system/knowledge-server.service.d/inbox.conf` |
 | Synchronization | A line in the administrator's crontab |
 | Logs | `journalctl -u knowledge-server`, `journalctl -u cloudflared` |
 | Cloudflare and client settings | The Cloudflare dashboard, and the connector settings in ChatGPT and Claude.ai |
@@ -85,8 +90,9 @@ published route only after the server runs with the owner subject.
 
 ### Set up the vault checkout
 
-The server reads a dedicated checkout, `/srv/knowledge-vault`, that only the
-synchronization changes. Do not edit notes in it.
+The server reads a dedicated checkout, `/srv/knowledge-vault`. Only the
+synchronization and your [review of proposals](#review-proposals) change it;
+do not edit notes in it otherwise.
 
 1. Install Git and clone the vault remote with your account:
 
@@ -107,7 +113,9 @@ synchronization changes. Do not edit notes in it.
    ```
 
    cron cannot enter a passphrase, so the SSH key for the vault remote must
-   work without one. A key that the NAS limits to reading is safer.
+   work without one. A key that the NAS limits to reading is safer, unless
+   you [enable write proposals](#enable-write-proposals): then you push
+   merged proposals with this key, and it needs push access.
 
 ### Install the server
 
@@ -237,6 +245,70 @@ Claude.ai chooses when to call the tools from their names and descriptions.
 To make it search the notes, mention them in the question or in your
 Claude.ai instructions.
 
+### Enable write proposals
+
+This step is optional. It lets the client save new notes and edits as
+proposals in `inbox/` under the root, which you then [review and
+merge](#review-proposals); the server never changes the notes themselves.
+The commands assume that the root is the whole checkout. For a subtree, the
+inbox is `<root>/inbox`, and the exclude line names its path in the
+checkout, such as `/<subtree>/inbox/`.
+
+Write proposals need a server version that has them. If the installed
+version is older, [update the server](#update-the-server) first: an older
+version rejects `write_proposals` and does not start.
+
+1. Create the inbox, owned by the service account, and make Git ignore it:
+
+   ```sh
+   sudo install -d -o knowledge-server -g knowledge-server -m 0755 \
+     /srv/knowledge-vault/inbox
+   echo /inbox/ >> /srv/knowledge-vault/.git/info/exclude
+   git -C /srv/knowledge-vault status --short
+   ```
+
+   Expected result: `git status` shows no `inbox/` entry.
+2. Let the service write in the inbox and nowhere else, with a drop-in for
+   the unit:
+
+   ```sh
+   sudo install -d /etc/systemd/system/knowledge-server.service.d
+   printf '[Service]\nReadWritePaths=/srv/knowledge-vault/inbox\n' |
+     sudo tee /etc/systemd/system/knowledge-server.service.d/inbox.conf
+   sudo systemctl daemon-reload
+   ```
+
+3. Add `write_proposals = true` to `/etc/knowledge-server/config.toml` with
+   `sudoedit`, run `sudo systemctl restart knowledge-server`, and repeat the
+   `curl` check of [Install the server](#install-the-server) step 5. If it
+   fails, look for a `startup category=...` line in
+   `journalctl -u knowledge-server -n 20`, and see
+   [Troubleshooting](#troubleshooting). systemd restarts a failed server every
+   few seconds, so the unit can look active while it fails.
+4. Check what the running service can write:
+
+   ```sh
+   pid=$(systemctl show --property MainPID --value knowledge-server)
+   sudo nsenter --target "$pid" --mount --setuid "$(id -u knowledge-server)" \
+     --setgid "$(id -g knowledge-server)" sh -c '
+       touch /srv/knowledge-vault/inbox/.check && echo "inbox: writable"
+       rm -f /srv/knowledge-vault/inbox/.check
+       touch /srv/knowledge-vault/.check'
+   ```
+
+   Expected result: `inbox: writable`, and an error from `touch` that ends
+   in `Read-only file system`. `Permission denied` instead means that only
+   the file permissions protect the checkout: check that the unit has
+   `ProtectSystem=strict`.
+5. In ChatGPT or Claude.ai, check that the connector lists
+   `knowledge_propose_note` and `knowledge_propose_edit`; if it does not,
+   refresh the connector. Ask the client to save a short test note; it may
+   write without asking for confirmation, because you asked for the write.
+   Then review or delete the test note as [Review
+   proposals](#review-proposals) describes.
+
+To disable writing, remove `write_proposals = true` and restart the server.
+
 ## Operate the services
 
 | Action | Command |
@@ -269,15 +341,74 @@ nothing while the services are stopped. To resume, run
 
 The next tool call sees pulled files; no restart is needed. A pull fails
 instead of merging when the remote history has diverged, for example after a
-rewrite. The checkout has no local changes, so reset it:
+rewrite. Then reset the checkout:
 
 ```sh
 git -C /srv/knowledge-vault fetch
 git -C /srv/knowledge-vault reset --hard '@{upstream}'
 ```
 
+**Warning:** The reset discards commits and changes that are only in the
+checkout, such as a merged proposal that you have not pushed. Push them
+first, or merge them again after the reset. The reset keeps the inbox,
+because Git ignores it.
+
 Results during a pull can mix old and new files; repeat the question
 afterwards.
+
+### Review proposals
+
+Agents save proposals in `/srv/knowledge-vault/inbox`. The proposal for the
+vault path `<note>` is `inbox/<note>`. An edit of an existing note also has
+a base copy, `inbox/.base/<note>`, of the version that it started from; a
+new note has none. Stop the server while you review, so that no write can
+change a proposal during the merge. Remote tool calls fail until you start
+it again.
+
+1. Stop the server and update the checkout:
+
+   ```sh
+   sudo systemctl stop knowledge-server
+   cd /srv/knowledge-vault
+   git pull --ff-only
+   find inbox -type f -iname '*.md' -not -path 'inbox/.base/*'
+   ```
+
+2. For each proposal that you accept, put it into the note:
+   - **An edit** (it has a base copy): merge it with changes that reached the
+     note since the proposal was made:
+
+     ```sh
+     git merge-file <note> inbox/.base/<note> inbox/<note>
+     ```
+
+     Expected result: exit status 0. A positive status is the number of
+     conflicts; resolve the conflict markers in `<note>` by hand.
+   - **A new note**: if `<note>` does not exist yet, copy it:
+
+     ```sh
+     test ! -e <note> && install -D -m 0644 inbox/<note> <note>
+     ```
+
+     If `<note>` exists, a note was added at that path since the proposal was
+     made; combine the two by hand.
+3. Review the changes with `git diff` and `git status`, then commit and push:
+
+   ```sh
+   git add <note>
+   git commit -m '<message>'
+   git push
+   ```
+
+   If the push is rejected because the remote has new commits, run
+   `git pull --rebase` and push again.
+4. Delete each proposal that you merged or rejected, with its base copy, and
+   start the server:
+
+   ```sh
+   sudo rm -f inbox/<note> inbox/.base/<note>
+   sudo systemctl start knowledge-server
+   ```
 
 ### Update the server
 
@@ -338,7 +469,7 @@ No OAuth token is stored in the VM.
 
 | Symptom | Check |
 |---|---|
-| `startup category=...` in the server log | The [log policy](http-contract.md#logging) names the cause. `writable-root` means the server was started outside its unit, for example by hand from your account. |
+| `startup category=...` in the server log | The [log policy](http-contract.md#logging) names the cause. `writable-root` means the server was started outside its unit, for example by hand from your account. `configuration` right after you add `write_proposals` means that the installed version is older than write proposals; [update the server](#update-the-server). `inbox` means that `write_proposals = true`, but the inbox is missing, is not owned by the service account, or the [drop-in](#enable-write-proposals) is not loaded. |
 | 401 with `event category=key-fetch-failed` | The VM cannot reach `https://<team>.cloudflareaccess.com`. After a failure, the server waits 30 seconds before it fetches again. |
 | 401 with only `event category=assertion-rejected` | `team_domain`, `audience`, or `owner_subject` does not match the Access application, or another identity sent the request. |
 | 421 | **HTTP Host Header** in the tunnel route is not `public_host`. |

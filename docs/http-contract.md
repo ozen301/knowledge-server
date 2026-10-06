@@ -1,20 +1,23 @@
 # HTTP contract
 
-Status: implemented and deployed, updated 2026-10-05. This document specifies
+Status: implemented and deployed, updated 2026-10-07. This document specifies
 the protected HTTP entry point, `knowledge-server-http`: its configuration,
 launch modes, request checks, assertion and key rules, and logging.
 `tests/test_http.py` checks it offline. The [design
 decisions](design-decisions.md#why-this-remote-route) explain the route that
-it serves, and the [deployment guide](deployment.md) installs and runs it.
-The [tool contract](tool-contract.md) defines the tools themselves.
+it serves, and the [guide for web clients](use-with-web-clients.md) installs
+and runs it. The [tool contract](tool-contract.md) defines the tools
+themselves.
 
 ## Entry point
 
-The entry point serves the four tools of the [tool contract](tool-contract.md)
-at `/mcp` over the SDK's Streamable HTTP transport, in stateless mode with JSON
-responses. Their schemas and annotations are semantically equal to the stdio
-server's. It adds no `search` or `fetch` wrapper tools; OpenAI's
-[developer-mode
+The entry point serves the four read tools of the [tool
+contract](tool-contract.md) at `/mcp` over the SDK's Streamable HTTP
+transport, in stateless mode with JSON responses. Their schemas and
+annotations are semantically equal to the stdio server's. When
+`write_proposals` is enabled, it also serves the two [write
+tools](tool-contract.md#write-proposals), which stdio does not. It adds no
+`search` or `fetch` wrapper tools; OpenAI's [developer-mode
 guide](https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt)
 does not require them.
 
@@ -40,6 +43,7 @@ explicit TOML file, given by absolute path, of at most 16 KiB. It ignores
 | `public_host` | required | The public MCP hostname, in lowercase, with at least one dot and at most 253 characters, without a scheme or port. |
 | `port` | `8000` | The loopback listener port, 1–65535. |
 | `allowed_origins` | `[]` | Exact `Origin` values: `http` or `https`, a host, and an optional port; no path (not even `/`), query, fragment, credentials, or wildcard. |
+| `write_proposals` | `false` | A boolean. `true` serves the write tools; it is valid only in `vault` mode. |
 
 `root` follows the [same rules as
 `KNOWLEDGE_ROOT`](tool-contract.md#configuration-and-common-policy). The
@@ -52,18 +56,24 @@ startup with a fixed diagnostic.
 ## Launch modes
 
 `mode` has no default, and no other field or environment value selects a
-mode. Both modes serve the same tools under the same gate, bounds, and
-logging; they differ only in the startup check of `root`.
+mode. Both modes serve the four read tools under the same gate, bounds, and
+logging; they differ in the startup check of `root` and in whether the write
+tools can be enabled.
 
 - **`synthetic`**: the root must pass the [synthetic
   guard](#synthetic-guard). Use it for service checks and troubleshooting
-  with the invented notes.
+  with the invented notes. It has no inbox: `write_proposals = true` is a
+  configuration error.
 - **`vault`**: the real-vault mode, for the [exposed
   scope](design-decisions.md#exposed-scope). Startup fails with
   `writable-root` if the process can write to the root directory, which stops
   a launch outside the read-only service unit. Only this mode may serve real
   notes, only for a scope that the vault owner has authorized, and no
-  copy-ready example enables it.
+  copy-ready example enables it. With `write_proposals = true`, startup also
+  fails with `inbox` unless `<root>/inbox` is a real directory, not a
+  symlink, that the process can write to. The `writable-root` check still
+  applies, so the root itself stays read-only. The service creates
+  `inbox/.base/` when it first needs it.
 
 ## Synthetic guard
 
@@ -118,10 +128,12 @@ bounds cannot stop a filesystem call that a worker thread has already
 started: the [tool limits](tool-contract.md#initial-limits) bound that
 work, and search keeps its own deadline.
 
-Reasons for the values: a valid tool request is a few KiB, and 1 MiB leaves
-room for client metadata. A body crosses loopback in milliseconds, so 10
-seconds still frees a stalled request's place. 8 places exceed what one vault
-owner uses and keep slow searches within a small VM's capacity.
+Reasons for the values: a read request is a few KiB, a write request at the
+[write-text limit](tool-contract.md#initial-limits) fits unless the client
+escapes most of its characters, and 1 MiB leaves room for client metadata. A
+body crosses loopback in milliseconds, so 10 seconds still frees a stalled
+request's place. 8 places exceed what one vault owner uses and keep slow
+searches within a small VM's capacity.
 
 Every HTTP response that the ASGI application produces, including
 rejections, errors, and 404s, carries `Cache-Control: no-store`, which
@@ -213,6 +225,7 @@ Startup categories, each followed by exit status 1:
 |---|---|
 | `configuration` | `--config` is missing, the file is unreadable or invalid, or the root fails the synthetic guard. |
 | `writable-root` | In `vault` mode, the process can write to the root directory. |
+| `inbox` | In `vault` mode with `write_proposals = true`, `<root>/inbox` is missing, is not a real directory, or is not writable by the process. |
 | `missing-ripgrep` | `rg` is not on `PATH`. |
 | `runtime` | The server could not start, for example because the port is in use, or it failed unexpectedly. |
 

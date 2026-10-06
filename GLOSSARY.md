@@ -26,6 +26,16 @@ of it, configured explicitly through `KNOWLEDGE_ROOT` for stdio or the HTTP
 configuration file. Tool paths and citations are relative to it.
 _Avoid_: Vault, when only the exposed directory is meant
 
+**Inbox**:
+The directory `inbox/` directly under the root, where the HTTP server saves
+proposals. Git ignores it, and it is not part of the knowledge vault.
+
+**Proposal**:
+A new note or an edited copy of a note that an agent saved in the inbox. It
+takes effect only when the vault owner merges it into the knowledge vault.
+Each note has at most one pending proposal.
+_Avoid_: Draft
+
 **Vault owner**:
 The person who owns the knowledge vault, directs this project, and makes the
 decisions that the documents leave open.

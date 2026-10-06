@@ -32,6 +32,9 @@ from knowledge_server.core.models import (
     KnowledgeError,
     ListRequest,
     ListResult,
+    ProposalResult,
+    ProposeEditRequest,
+    ProposeNoteRequest,
     ReadRequest,
     ReadResult,
     SearchRequest,
@@ -49,6 +52,7 @@ SECRET = "SENTINEL-SECRET"
 PRIVATE_TEXT = "PRIVATE-EXCEPTION-TEXT"
 QUERY_TEXT = "QUERY-PRIVATE-TEXT"
 TOOL_NAMES = {"knowledge_search", "knowledge_read", "knowledge_list", "knowledge_info"}
+WRITE_TOOL_NAMES = {"knowledge_propose_note", "knowledge_propose_edit"}
 MAX_RESULTS = DEFAULT_LIMITS.max_search_results
 MAX_PAGE = DEFAULT_LIMITS.max_directory_page
 MAX_LINES = DEFAULT_LIMITS.max_read_lines
@@ -236,6 +240,141 @@ def test_every_tool_is_annotated_read_only(vault: Path) -> None:
         assert annotations.idempotent_hint is True
         assert annotations.open_world_hint is False
         assert annotations.title
+
+
+def test_read_tool_descriptions_mark_inbox_notes_as_unreviewed(vault: Path) -> None:
+    """Search, read, and list warn that inbox notes are not yet reviewed."""
+
+    async def list_tools() -> Any:
+        async with Client(create_server(PathPolicy(vault), ripgrep=RG)) as client:
+            return await client.list_tools()
+
+    tools = {tool.name: tool for tool in _run(list_tools()).tools}
+    for name in ("knowledge_search", "knowledge_read", "knowledge_list"):
+        assert "inbox/ are unreviewed proposals" in (tools[name].description or "")
+
+
+# Write tools
+
+
+def test_write_tools_are_served_only_when_enabled(vault: Path) -> None:
+    """The write tools have their own schemas, annotations, and descriptions."""
+
+    async def list_tools(write_proposals: bool) -> Any:
+        server = create_server(
+            PathPolicy(vault), ripgrep=RG, write_proposals=write_proposals
+        )
+        async with Client(server) as client:
+            return await client.list_tools()
+
+    assert {tool.name for tool in _run(list_tools(False)).tools} == TOOL_NAMES
+    tools = {tool.name: tool for tool in _run(list_tools(True)).tools}
+    assert set(tools) == TOOL_NAMES | WRITE_TOOL_NAMES
+    for name, request_model in (
+        ("knowledge_propose_note", ProposeNoteRequest),
+        ("knowledge_propose_edit", ProposeEditRequest),
+    ):
+        tool = tools[name]
+        assert tool.input_schema == request_model.model_json_schema()
+        assert tool.output_schema == ProposalResult.model_json_schema()
+        assert tool.annotations is not None
+        assert tool.annotations.read_only_hint is False
+        assert tool.annotations.idempotent_hint is False
+        assert tool.annotations.open_world_hint is False
+        assert tool.annotations.title
+        assert "proposal" in (tool.description or "")
+    assert tools["knowledge_propose_note"].annotations.destructive_hint is False
+    assert tools["knowledge_propose_edit"].annotations.destructive_hint is True
+    assert "never on your own initiative" in (
+        tools["knowledge_propose_edit"].description or ""
+    )
+    assert "initiative" not in (tools["knowledge_propose_note"].description or "")
+    for name in TOOL_NAMES:
+        assert tools[name].annotations.read_only_hint is True
+
+
+def test_write_tools_save_proposals_that_the_read_tools_serve(vault: Path) -> None:
+    """A proposal written through the adapter is visible to all four read tools."""
+    (vault / "inbox").mkdir()
+    before = _snapshot(vault / "notes")
+
+    async def exercise() -> list[CallToolResult]:
+        server = create_server(PathPolicy(vault), ripgrep=RG, write_proposals=True)
+        async with Client(server) as client:
+            read = _success(
+                await client.call_tool("knowledge_read", {"path": "notes/alpha.md"})
+            )
+            calls = [
+                (
+                    "knowledge_propose_note",
+                    {"path": "plans/plan.md", "content": "Plan\n"},
+                ),
+                (
+                    "knowledge_propose_edit",
+                    {
+                        "path": "notes/alpha.md",
+                        "base_sha256": read["content_sha256"],
+                        "edits": [{"old": "ECC memory", "new": "ECC proposal"}],
+                    },
+                ),
+                ("knowledge_search", {"query": "ECC proposal"}),
+                ("knowledge_read", {"path": "inbox/notes/alpha.md"}),
+                ("knowledge_list", {"path": "inbox"}),
+                ("knowledge_info", {"path": "inbox/plans/plan.md"}),
+                (
+                    "knowledge_propose_edit",
+                    {
+                        "path": "notes/alpha.md",
+                        "base_sha256": read["content_sha256"],
+                        "edits": [{"old": "third", "new": "x"}],
+                    },
+                ),
+                (
+                    "knowledge_propose_edit",
+                    {
+                        "path": "inbox/notes/alpha.md",
+                        "base_sha256": "0" * 64,
+                        "edits": [{"old": "x", "new": "y"}],
+                    },
+                ),
+                ("knowledge_propose_note", {"path": "a.md", "content": "a\r\n"}),
+            ]
+            return [
+                await client.call_tool(name, arguments) for name, arguments in calls
+            ]
+
+    (
+        note,
+        edit,
+        search,
+        read,
+        listing,
+        info,
+        pending,
+        stale,
+        invalid,
+    ) = _run(exercise())
+    assert _success(note)["path"] == "inbox/plans/plan.md"
+    assert _success(edit)["path"] == "inbox/notes/alpha.md"
+    assert [match["path"] for match in _success(search)["matches"]] == [
+        "inbox/notes/alpha.md"
+    ]
+    assert _success(read)["content_sha256"] == _success(edit)["content_sha256"]
+    assert [entry["path"] for entry in _success(listing)["entries"]] == [
+        "inbox/notes",
+        "inbox/plans",
+    ]
+    assert _success(info)["readable"] is True
+    assert _error(pending)["code"] == "PROPOSAL_PENDING"
+    assert _error(stale)["code"] == "STALE_CONTENT"
+    assert _error(invalid) == {
+        "code": "INVALID_ARGUMENT",
+        "message": (
+            "Text must be valid Unicode without NUL, CR, or U+FEFF characters; "
+            "use LF for line breaks."
+        ),
+    }
+    assert _snapshot(vault / "notes") == before
 
 
 # Successful calls

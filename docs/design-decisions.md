@@ -1,12 +1,11 @@
 # Design decisions
 
-Status: agreed design, updated 2026-10-05. This document explains why
+Status: agreed design, updated 2026-10-07. This document explains why
 knowledge-server works as it does: its goal, the decisions to preserve, the
-remote route for ChatGPT and its trust boundary, and what has and has not
-been verified. The [architecture overview](architecture.md) describes the
-components, the [tool contract](tool-contract.md) and the [HTTP
-contract](http-contract.md) specify exact behavior, and the
-[roadmap](roadmap.md) lists optional later work.
+remote route for ChatGPT, and its trust boundary. The [architecture
+overview](architecture.md) describes the components, the [tool
+contract](tool-contract.md) and the [HTTP contract](http-contract.md) specify
+exact behavior, and the [roadmap](roadmap.md) lists optional later work.
 
 ## Goal
 
@@ -24,10 +23,11 @@ by hand, and availability is best effort: if the service stops, the owner
 restarts it. These assumptions keep operations simple. They do not weaken the
 note-access boundaries, which stay strict for every transport.
 
-The server exposes four read-only tools over stdio and a protected HTTP
-route. It reads the local vault checkout, configured through `KNOWLEDGE_ROOT`
-for stdio or the configuration file for HTTP; the vault remote is used for
-synchronization and is not searchable.
+The server exposes four read tools over stdio and a protected HTTP route. The
+HTTP route can also serve two write tools that save proposals. The server reads
+the local vault checkout, configured through `KNOWLEDGE_ROOT` for stdio or the
+configuration file for HTTP; the vault remote is used for synchronization and
+is not searchable.
 
 The remote route needs one Linux host with systemd, here called the VM, that
 runs the server and cloudflared as services. The documents use the vault
@@ -61,12 +61,22 @@ abstraction before a second backend exists.
    instructions. The service does not execute embedded code or automatically
    fetch Markdown URLs.
 6. **Keep operational state separate.** Future indexes and caches live outside
-   both the vault and the source repository.
+   both the vault and the source repository. The inbox and its base copies
+   are not operational state but pending note content, which cannot be
+   rebuilt. They stay in the checkout so that the read tools serve proposals
+   under the same path policy. Git ignores the inbox, and a proposal is not
+   part of the knowledge vault until the vault owner merges it.
 7. **Use ripgrep for initial literal search.** Its integration must use the
    shared file policy, bounded subprocess output, deadlines, and cancellation.
    ripgrep is the current implementation choice, not a permanent requirement;
    [existing implementation choices](#existing-implementation-choices) states
    when to reconsider it.
+8. **Writes are proposals that the vault owner reviews.** The service never
+   changes a canonical note. Over HTTP, an agent can save a new note or an
+   edit as a [proposal](tool-contract.md#write-proposals) in the inbox; it
+   takes effect only when the vault owner merges it in the checkout. Local
+   hosts can edit the vault directly, so stdio stays read-only. The service
+   unit, not only the path policy, limits the service's writes to the inbox.
 
 The design assumes that the vault owner controls the local vault checkout and
 that concurrent edits are trusted. Path checks and symlink rejection protect
@@ -125,11 +135,13 @@ Reasons for this route:
 
 Accepted limitations: Cloudflare handles decrypted traffic and keeps
 provider-side logs; OpenAI receives the tool results; immediate revocation of
-issued tokens after a policy change is not guaranteed, so the route relies on
-a verified emergency stop instead; and compatibility is confirmed only for
-the deployed client configuration. The [trust
-boundary](#trust-boundary-and-data-handling) records the data handling
-review.
+issued tokens after a policy change is not guaranteed, so the route relies on a
+verified emergency stop instead; and compatibility is confirmed only for the
+deployed client configuration. Some behaviors have not been observed live: a
+request from a second identity, which tests reject at the origin; signing-key
+rotation; and the refresh-grant exchange, although access continues beyond the
+token lifetime. The [trust boundary](#trust-boundary-and-data-handling) records
+the data handling review.
 
 WorkOS AuthKit is a fallback only if a demonstrated compatibility or identity
 limitation of Managed OAuth remains after configuration and debugging;
@@ -146,6 +158,12 @@ excerpts, and keeps its own operational logs. ChatGPT sends tool results to
 OpenAI's models, as local hosts send them to their providers. The
 application's [log policy](http-contract.md#logging) covers only this
 application's logs, not Cloudflare's or OpenAI's.
+
+Text that a client writes is untrusted, like note text. A proposal can hold
+anything the conversation produced, including instructions that a note or a
+web page injected. It reaches the knowledge vault only through the vault
+owner's review of the diff, and the read tools describe inbox notes as
+unreviewed. Proposal text crosses Cloudflare and OpenAI like excerpts do.
 
 Compatibility between ChatGPT, Managed OAuth, and the SDK's HTTP transport
 is confirmed for the example deployment's configuration only. Before real
@@ -207,20 +225,34 @@ authentication, path, key-cache, resource, or logging protections, which are
 part of remote exposure, not later cleanup. Investigate capacity or
 performance only if ordinary use reveals errors or unacceptable delays.
 
+Each write request is bounded, but the inbox has no bound on its total size
+or number of proposals. Only the vault owner can call the tools, and the
+vault owner deletes merged proposals. A full inbox can fill the VM's disk,
+but it cannot change a canonical note. Do not rely on the client to confirm
+writes: in the example deployment, ChatGPT wrote without asking when the
+vault owner had asked it to write. Only ChatGPT has been used to write.
+
 ### VM services and network
 
 The server and cloudflared run as systemd services in the same VM,
-communicating over loopback; the [deployment guide](deployment.md) installs and
-operates them. cloudflared runs a dashboard-managed tunnel, installed with
-`cloudflared service install`, so the tunnel's routes are configured in the
-Cloudflare dashboard. No containers or hypervisor-specific deployment
-configuration are needed.
+communicating over loopback; the [guide for web
+clients](use-with-web-clients.md) installs and operates them. cloudflared runs
+a dashboard-managed tunnel, installed with `cloudflared service install`, so
+the tunnel's routes are configured in the Cloudflare dashboard. No containers
+or hypervisor-specific deployment configuration are needed.
 
 - **Synchronization.** The server never runs Git. A cron job of the vault
   owner's account fast-forwards a dedicated checkout, so synchronization
   stays under the vault owner's control, and a diverged history stops the
   pull instead of merging. A bare Git remote alone cannot serve as the
   readable collection. Add snapshot machinery only for a demonstrated need.
+- **Merging proposals.** The vault owner merges proposals in this checkout
+  and pushes them with the account's key, so the key needs push access.
+  The vault owner stops the service for the review, so no write can change
+  a proposal while it is merged; the remote route is unavailable for those
+  minutes. An edit merges with `git merge-file` against its base copy, so
+  changes that reached the note after the proposal was made are kept or
+  shown as conflicts.
 - **Forwarded Host.** The dashboard-managed tunnel's route sends requests to
   `http://127.0.0.1:<port>` with **HTTP Host Header** set to `public_host`,
   which the gate accepts (`test_allowed_hosts` in `tests/test_http.py`).
@@ -238,33 +270,35 @@ configuration are needed.
 ### Exposed scope
 
 The root is explicit configuration. It can be the whole checkout or one
-subtree, with read-only access for the server; tool paths and citations are
-relative to that root. A selection spread across several directories needs
-its own design. Only `vault` mode serves real notes, and only for a scope
-that the vault owner has authorized; a change of scope needs a new
-authorization. In the example deployment, the vault owner authorized the
-whole dedicated checkout, `/srv/knowledge-vault`, on 2026-10-05.
+subtree, with read-only access for the server except in the inbox when write
+proposals are enabled; tool paths and citations are relative to that root.
+A selection spread across several directories needs its own design. Only
+`vault` mode serves real notes, and only for a scope that the vault owner has
+authorized; a change of scope needs a new authorization. In the example
+deployment, the vault owner authorized the whole dedicated checkout,
+`/srv/knowledge-vault`, on 2026-10-05.
 
 ### Edge cache
 
 By Cloudflare's [default cache
 behavior](https://developers.cloudflare.com/cache/concepts/default-cache-behavior/),
 checked on 2026-10-05, MCP `POST` requests to `/mcp` and Uvicorn's own 400 and
-500 responses, which lack `Cache-Control: no-store`, are not cached. A Cache
-Rule or Page Rule such as "cache everything" could change that, so none may
-cover the MCP hostname.
+500 responses, which lack `Cache-Control: no-store`, are not cached; the edge's
+handling of those Uvicorn responses has not been observed. A Cache Rule or Page
+Rule such as "cache everything" could change that, so none may cover the MCP
+hostname.
 
 ## Shutdown and revocation
 
 Stopping cloudflared or the origin is the local shutdown: stopping either one
 removes access, and access returns after it restarts. The [emergency
-stop](deployment.md#emergency-stop) stops and disables both. It depends on
-management access to the VM: in the example deployment, through Tailscale SSH
-or the Unraid VM console. The vault owner accepted that dependency, so a
-Cloudflare-side route shutdown was not tested; Cloudflare does not document
-how deleting a published route affects active connections. If a stop without
-VM access becomes necessary, test deleting the route, with Access protection in
-place, before relying on it.
+stop](use-with-web-clients.md#emergency-stop) stops and disables both. It
+depends on management access to the VM: in the example deployment, through
+Tailscale SSH or the Unraid VM console. The vault owner accepted that
+dependency, so a Cloudflare-side route shutdown was not tested; Cloudflare does
+not document how deleting a published route affects active connections. If a
+stop without VM access becomes necessary, test deleting the route, with Access
+protection in place, before relying on it.
 
 Never disable or delete Access protection as a kill switch, because removing
 the gate does not stop routing. A policy change alone is not a verified stop.
@@ -273,42 +307,3 @@ acts at once. Managed OAuth reevaluates policy when a token is refreshed, so a
 policy change may not revoke issued tokens immediately. Measuring that delay
 is optional; without a measurement, assume that issued tokens stay valid until
 they expire.
-
-## Verification
-
-Status on 2026-10-05. `scripts/check` runs the automated tests without the
-real vault, external accounts, or network services. They cover the tool
-contract, the path policy and limits, the HTTP gate and bounds, assertion
-and owner rejection with invented keys, bounded key retrieval and rotation,
-both launch modes, HTTP/stdio parity, and the exclusion of sensitive content
-from logs. The [retrieval questions](sample-notes.md#known-weaknesses) record
-how local hosts answer fixed questions about the sample notes.
-
-On the example deployment, the vault owner observed that:
-
-- unauthenticated requests get 401, from the origin on loopback and from
-  Cloudflare on the public endpoint;
-- the service runs as `knowledge-server`, listens only on loopback, and sees
-  the vault checkout as read-only;
-- ChatGPT connects through DCR and Managed OAuth and answers real-vault
-  questions with correct citations, and access continues beyond the
-  15-minute token lifetime;
-- stopping either service, or the emergency stop, removes access until the
-  services start again;
-- a pulled change appears in the next answer.
-
-Another deployment should repeat the checks in the [deployment
-guide](deployment.md).
-
-These behaviors remain unverified:
-
-- A live request from a second identity; tests cover the origin's rejection
-  of non-owner assertions.
-- A Cloudflare-side route shutdown; see [shutdown and
-  revocation](#shutdown-and-revocation).
-- The refresh-grant exchange; continued access supports renewal but does not
-  show the exchange.
-- Live signing-key rotation, and the edge's handling of Uvicorn's own 400 and
-  500 responses.
-- The MCP protocol version that ChatGPT negotiates, and which of the four
-  tools it calls; ChatGPT's activity summary did not show individual calls.

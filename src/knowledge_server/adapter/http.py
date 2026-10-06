@@ -257,8 +257,9 @@ def create_http_app(
     *,
     ripgrep: str,
     key_fetch: KeyFetch | None = None,
+    write_proposals: bool = False,
 ) -> HTTPApplication:
-    """Build the gated MCP HTTP application for the four knowledge tools.
+    """Build the gated MCP HTTP application for the knowledge tools.
 
     The SDK application serves MCP at `/mcp` in stateless mode, keeping no
     session between requests, and answers with JSON instead of an event
@@ -272,12 +273,14 @@ def create_http_app(
         ripgrep: The ripgrep executable used by knowledge search.
         key_fetch: Replaces the HTTPS signing-key fetch, for offline tests;
             None fetches from `config.jwks_url`.
+        write_proposals: Whether to serve the two write tools, which write
+            in the root's inbox.
 
     Returns:
         The gate wrapping the SDK application. Run it with lifespan support,
         because the SDK prepares its request handling at lifespan startup.
     """
-    server = create_server(policy, ripgrep=ripgrep)
+    server = create_server(policy, ripgrep=ripgrep, write_proposals=write_proposals)
     sdk_app = server.streamable_http_app(
         streamable_http_path="/mcp",
         json_response=True,

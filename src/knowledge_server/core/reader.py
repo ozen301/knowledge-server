@@ -1,10 +1,10 @@
 """Bounded note loading and the read, list, and info operations.
 
 Every operation checks the caller's path with `PathPolicy` before touching the
-note. Read and info then load the note with `load_note`, and search with
-`load_note_text`. Both read at most the file-size limit plus one byte, so an
-oversized file is detected without reading all of it, and both apply the same
-content checks.
+note. Read and info then load the note with `load_note`, search with
+`load_note_text`, and edit proposals with `load_note_bytes`. All of them
+read at most the file-size limit plus one byte, so an oversized file is
+detected without reading all of it, and all apply the same content checks.
 """
 
 import contextlib
@@ -153,6 +153,33 @@ def load_note_text(
     if text is None:
         return LoadedText(None, "invalid_text")
     return LoadedText(text, None)
+
+
+def load_note_bytes(
+    policy: PathPolicy, resolved: ResolvedPath, limits: Limits = DEFAULT_LIMITS
+) -> tuple[bytes, str]:
+    """Load a checked note's raw bytes and decoded text, as an edit needs them.
+
+    Args:
+        policy: The policy that checked `resolved`.
+        resolved: A file path returned by `policy.resolve`.
+        limits: Limits that set the largest readable file.
+
+    Returns:
+        The raw bytes, and the text as the read tools see it: without a
+        leading BOM and with CRLF normalized to LF.
+
+    Raises:
+        KnowledgeError: `FILE_TOO_LARGE`, `INVALID_ENCODING`, or the codes
+            `load_note` raises.
+    """
+    _, raw = _load_raw(policy, resolved, limits.max_file_bytes + 1)
+    if len(raw) > limits.max_file_bytes:
+        raise KnowledgeError(DomainErrorCode.FILE_TOO_LARGE)
+    text = _decode_text(raw)
+    if text is None:
+        raise KnowledgeError(DomainErrorCode.INVALID_ENCODING)
+    return raw, text
 
 
 def read_note(

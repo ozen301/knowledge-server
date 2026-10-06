@@ -157,11 +157,14 @@ class LaunchConfig:
             the mode's startup check to `root`.
         root: Resolved absolute path to the directory that the tools expose.
         http: The validated transport and authorization settings.
+        write_proposals: Whether to serve the write tools, which write in
+            `root/inbox`; only `vault` mode can enable them.
     """
 
     mode: LaunchMode
     root: Path
     http: HTTPConfig
+    write_proposals: bool = False
 
 
 def load_launch_config(path: Path) -> LaunchConfig:
@@ -169,7 +172,8 @@ def load_launch_config(path: Path) -> LaunchConfig:
 
     The file must set `mode` to `"synthetic"` or `"vault"`, `root`, and the
     required `HTTPConfig` fields; unknown fields are rejected, and no mode is
-    assumed. `KNOWLEDGE_ROOT` and `.env` files are not read, but `root`
+    assumed. `write_proposals` is an optional boolean that only `vault` mode
+    may set to true. `KNOWLEDGE_ROOT` and `.env` files are not read, but `root`
     passes the same validation as `KNOWLEDGE_ROOT`.
 
     Args:
@@ -199,7 +203,10 @@ def load_launch_config(path: Path) -> LaunchConfig:
         origins = values.pop("allowed_origins", [])
         if not isinstance(origins, list):
             raise TypeError
+        write_proposals = values.pop("write_proposals", False)
+        if type(write_proposals) is not bool or (write_proposals and mode != "vault"):
+            raise ValueError
         http = HTTPConfig(**values, allowed_origins=tuple(origins))
-        return LaunchConfig(mode, root, http)
+        return LaunchConfig(mode, root, http, write_proposals)
     except OSError, ValueError, TypeError, KeyError, ConfigurationError:
         raise ConfigurationError("HTTP configuration is invalid.") from None

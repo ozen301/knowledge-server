@@ -10,3 +10,4 @@ owner_subject = "<verified-owner-sub>"
 public_host = "mcp.example.com"
 port = 8000
 allowed_origins = []
+write_proposals = false

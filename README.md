@@ -1,8 +1,9 @@
 # knowledge-server
 
-A read-only MCP server that lets an agent search a personal knowledge base of
-Markdown notes, read the relevant lines, and cite the source note. It reads a
-local Git checkout of the notes without modifying them.
+An MCP server that lets an agent search a personal knowledge base of Markdown
+notes, read the relevant lines, and cite the source note. It reads a local Git
+checkout of the notes without modifying them. Over HTTP, it can also save new
+notes and edits as proposals that the vault owner reviews and merges.
 
 ## Features
 
@@ -11,8 +12,11 @@ local Git checkout of the notes without modifying them.
   `knowledge_list`, and `knowledge_info`.
 - One visibility policy for every tool: only regular `.md` notes, with no
   hidden paths or symlinks, and fixed limits on the size of results.
-- Reads the local vault checkout as it is now, never writes to it, and never
-  runs Git.
+- Reads the local vault checkout as it is now and never runs Git.
+- Optional write proposals over HTTP: `knowledge_propose_note` and
+  `knowledge_propose_edit` save new notes and exact text replacements in an
+  `inbox/` directory. They never change a note; the vault owner merges
+  proposals by hand.
 - Two ways to connect:
   - `knowledge-server` serves local MCP hosts over stdio. It has been checked
     with Claude Code and Codex CLI.
@@ -50,8 +54,8 @@ local vault checkout. Replace the example paths with absolute paths.
    searches, reads the relevant lines, and cites the note path and line.
 
 The host sends the note excerpts it receives to its model provider. The
-[usage guide](docs/usage.md) covers registration details, troubleshooting,
-and how the tools behave.
+[guide for local MCP hosts](docs/use-with-local-hosts.md) covers registration
+details, troubleshooting, and how the tools behave.
 
 ## Development prerequisites
 
@@ -89,11 +93,11 @@ than your machine.
 
 Guides:
 
-- [Usage guide](docs/usage.md): local host registration, troubleshooting,
-  behavior, and limits.
-- [Deployment guide](docs/deployment.md): setting up the remote route for
-  ChatGPT and Claude.ai in the VM, daily operation, updates, the emergency
-  stop, and troubleshooting.
+- [Use with local MCP hosts](docs/use-with-local-hosts.md): registration
+  over stdio, troubleshooting, and how the tools behave and their limits.
+- [Use with web clients](docs/use-with-web-clients.md): setting up the remote
+  route for ChatGPT and Claude.ai in the VM, write proposals and their
+  review, daily operation, updates, the emergency stop, and troubleshooting.
 
 Specifications:
 
@@ -107,7 +111,7 @@ Design and planning:
 - [Architecture overview](docs/architecture.md): what the components do and
   how they work together.
 - [Design decisions](docs/design-decisions.md): why the server works as it
-  does, the remote route and its trust boundary, and what is verified.
+  does, the remote route, and its trust boundary.
 - [Roadmap](docs/roadmap.md): optional later work and how to start a task.
 - [Sample notes and retrieval questions](docs/sample-notes.md): the invented
   test notes, the fixed questions about them, and the known retrieval
