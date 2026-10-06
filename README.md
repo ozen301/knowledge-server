@@ -1,36 +1,20 @@
-# knowledge-server
+# Knowledge Server
 
-An MCP server that lets an agent search a personal knowledge base of Markdown
-notes, read the relevant lines, and cite the source note. It reads a local Git
-checkout of the notes without modifying them. Over HTTP, it can also save new
-notes and edits as proposals that the vault owner reviews and merges.
+Let AI agents search your Markdown notes, read the lines that matter, and
+cite where they found them.
 
-## Features
-
-- Four read-only MCP tools: `knowledge_search` (literal phrase search),
-  `knowledge_read` (line ranges with line numbers for citation),
-  `knowledge_list`, and `knowledge_info`.
-- One visibility policy for every tool: only regular `.md` notes, with no
-  hidden paths or symlinks, and fixed limits on the size of results.
-- Reads the local vault checkout as it is now and never runs Git.
-- Optional write proposals over HTTP: `knowledge_propose_note` and
-  `knowledge_propose_edit` save new notes and exact text replacements in an
-  `inbox/` directory. They never change a note; the vault owner merges
-  proposals by hand.
-- Two ways to connect:
-  - `knowledge-server` serves local MCP hosts over stdio. It has been checked
-    with Claude Code and Codex CLI.
-  - `knowledge-server-http` is a protected HTTP service for remote clients
-    such as ChatGPT and Claude.ai. It accepts only requests that Cloudflare
-    Access signed for the vault owner, and includes a systemd unit.
-
-The first version is complete. The [roadmap](docs/roadmap.md) lists optional
-next steps.
+Knowledge Server is an [MCP](https://modelcontextprotocol.io/) server for a
+personal knowledge base: a folder of Markdown notes that you keep in Git. It
+works with local agents such as Claude Code and Codex CLI, and with web
+clients such as ChatGPT and Claude.ai. Agents read the notes but cannot edit
+them. Web clients can also propose new notes and edits, which take effect
+only when you review and merge them.
 
 ## Quick start
 
-You need uv, ripgrep (`rg`) on `PATH`, a clone of this repository, and a
-local vault checkout. Replace the example paths with absolute paths.
+You need [uv](https://docs.astral.sh/uv/), ripgrep (`rg`) on `PATH`, a clone
+of this repository, and a local checkout of your notes. Replace the example
+paths with absolute paths.
 
 1. Register the server with your MCP host. The host starts it when needed.
 
@@ -50,46 +34,17 @@ local vault checkout. Replace the example paths with absolute paths.
      -- uv run --project /path/to/knowledge-server --locked knowledge-server
    ```
 
-2. Ask the agent a question about your notes and to cite its source. It
-   searches, reads the relevant lines, and cites the note path and line.
+2. Ask the agent a question about your notes, and ask it to cite its source.
+   It searches, reads the relevant lines, and cites the note path and line.
 
 The host sends the note excerpts it receives to its model provider. The
 [guide for local MCP hosts](docs/use-with-local-hosts.md) covers registration
-details, troubleshooting, and how the tools behave.
+details, troubleshooting, and how the tools behave. To use the notes from
+ChatGPT or Claude.ai, follow the [guide for web
+clients](docs/use-with-web-clients.md); it sets up the HTTP service on a
+small Linux VM behind Cloudflare.
 
-## Development prerequisites
-
-- Python 3.14 or later.
-- uv for Python environment and dependency management.
-- ripgrep (`rg`) for literal text search. The search tests run it and fail
-  if it is not installed.
-
-## Validation
-
-Run the validation script from the repository root. It installs the pinned
-dependency set, runs formatting, lint, type, and test checks, checks for
-whitespace errors, and summarizes the results:
-
-```sh
-scripts/check
-```
-
-You can also run its main commands individually:
-
-```sh
-uv sync --locked --dev
-uv run ruff format --check .
-uv run ruff check .
-uv run pyright
-uv run pytest
-```
-
-GitHub Actions runs `scripts/check --ci` automatically only on pushes to
-`main`, so run the script locally before merging into `main`. CI installs
-ripgrep from the Ubuntu packages, so it can test a different ripgrep version
-than your machine.
-
-## Project documents
+## Documentation
 
 Guides:
 
@@ -112,13 +67,45 @@ Design and planning:
   how they work together.
 - [Design decisions](docs/design-decisions.md): why the server works as it
   does, the remote route, and its trust boundary.
-- [Roadmap](docs/roadmap.md): optional later work and how to start a task.
+- [Roadmap](docs/roadmap.md): possible next steps and how to start a task.
 - [Sample notes and retrieval questions](docs/sample-notes.md): the invented
   test notes, the fixed questions about them, and the known retrieval
   weaknesses.
 
 Project conventions:
 
-- [Project glossary](GLOSSARY.md): canonical terms for the vault, its local
-  checkout, and project roles.
-- [Repository guide](AGENTS.md): development workflow and writing conventions.
+- [Glossary](GLOSSARY.md): the terms for the vault, its local checkout, and
+  project roles.
+- [Repository guide](AGENTS.md): development workflow and writing
+  conventions.
+
+## Development
+
+You need Python 3.14 or later, uv, and ripgrep; the search tests run `rg` and
+fail without it. From the repository root, run:
+
+```sh
+scripts/check
+```
+
+It installs the locked dependencies, runs the formatting, lint, type, and
+test checks, checks for whitespace errors, and summarizes the results. You
+can also run its main commands one at a time:
+
+```sh
+uv sync --locked --dev
+uv run ruff format --check .
+uv run ruff check .
+uv run pyright
+uv run pytest
+```
+
+GitHub Actions runs `scripts/check --ci` automatically only on pushes to
+`main`, so run the script locally before merging into `main`. CI installs
+ripgrep from the Ubuntu packages, so it can test a different ripgrep version
+than your machine.
+
+## Status
+
+Knowledge Server is a personal project, built for one vault owner and in
+regular use. The [roadmap](docs/roadmap.md) lists possible next steps.

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "knowledge-server"
 version = "0.1.0"
-description = "Read-only MCP server for a personal knowledge base."
+description = "MCP server that lets agents search, read, and cite a personal Markdown knowledge base."
 readme = "README.md"
 requires-python = ">=3.14"
 license = { text = "MIT" }
