@@ -17,8 +17,8 @@ local Git checkout of the notes without modifying them.
   - `knowledge-server` serves local MCP hosts over stdio. It has been checked
     with Claude Code and Codex CLI.
   - `knowledge-server-http` is a protected HTTP service for remote clients
-    such as ChatGPT. It accepts only requests that Cloudflare Access signed
-    for the vault owner, and includes a systemd unit.
+    such as ChatGPT and Claude.ai. It accepts only requests that Cloudflare
+    Access signed for the vault owner, and includes a systemd unit.
 
 The first version is complete. The [roadmap](docs/roadmap.md) lists optional
 next steps.
@@ -91,8 +91,9 @@ Guides:
 
 - [Usage guide](docs/usage.md): local host registration, troubleshooting,
   behavior, and limits.
-- [Deployment guide](docs/deployment.md): setting up the ChatGPT route in the
-  VM, daily operation, updates, the emergency stop, and troubleshooting.
+- [Deployment guide](docs/deployment.md): setting up the remote route for
+  ChatGPT and Claude.ai in the VM, daily operation, updates, the emergency
+  stop, and troubleshooting.
 
 Specifications:
 

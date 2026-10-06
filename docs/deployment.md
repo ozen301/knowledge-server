@@ -1,13 +1,13 @@
 # Deployment and operations
 
-This guide sets up and operates the remote route through which ChatGPT uses
-knowledge-server, and the daily tasks that keep it running. The [design
-decisions](design-decisions.md#why-this-remote-route) explain the route, the
-[HTTP contract](http-contract.md) specifies the server's checks, and the
-[usage guide](usage.md) covers local MCP hosts over stdio.
+This guide sets up and operates the remote route through which ChatGPT and
+Claude.ai use knowledge-server, and the daily tasks that keep it running. The
+[design decisions](design-decisions.md#why-this-remote-route) explain the
+route, the [HTTP contract](http-contract.md) specifies the server's checks,
+and the [usage guide](usage.md) covers local MCP hosts over stdio.
 
 ```text
-ChatGPT (developer-mode connector)
+ChatGPT or Claude.ai (via custom connector)
     -> Cloudflare Access (vault owner sign-in with Managed OAuth)
     -> Cloudflare Tunnel
     -> cloudflared service in the Ubuntu VM
@@ -38,7 +38,7 @@ distribution, also adjust the package installation, the Python path, and, if
 | Vault checkout | `/srv/knowledge-vault`, owned by the administrator's account |
 | Synchronization | A line in the administrator's crontab |
 | Logs | `journalctl -u knowledge-server`, `journalctl -u cloudflared` |
-| Cloudflare and ChatGPT settings | The Cloudflare dashboard and ChatGPT's connector settings |
+| Cloudflare and client settings | The Cloudflare dashboard, and the connector settings in ChatGPT and Claude.ai |
 
 Daily tasks, updates, the emergency stop, and troubleshooting are in
 [Operate the services](#operate-the-services).
@@ -49,8 +49,9 @@ Before you start, the vault owner reads the [trust
 boundary](design-decisions.md#trust-boundary-and-data-handling) and
 authorizes the exposed scope: the whole vault checkout or one subtree of it.
 All visible `.md` notes in that scope become readable through the connector,
-including notes that later pulls add, and Cloudflare and OpenAI handle the
-excerpts that ChatGPT receives. Replace each `<placeholder>`.
+including notes that later pulls add, and Cloudflare and the client's
+provider, OpenAI or Anthropic, handle the excerpts that the client receives.
+Replace each `<placeholder>`.
 
 ### Prepare Cloudflare
 
@@ -62,8 +63,10 @@ tunnel. Use a domain whose DNS Cloudflare manages, in the account that holds
 the Zero Trust organization. In the Managed OAuth
 settings:
 
-- Add `https://chatgpt.com/connector/oauth/*` to the redirect allowlist.
-  Without it, ChatGPT's connection fails with a generic settings rejection.
+- For ChatGPT, add `https://chatgpt.com/connector/oauth/*` to the redirect
+  allowlist. For Claude.ai, add `https://claude.ai/api/mcp/auth_callback`.
+  Without the right redirect allowlist, the client cannot complete the OAuth
+  flow.
 - Keep **Allow localhost clients** and **Allow loopback clients** disabled.
   They govern OAuth callbacks, not the server's loopback listener.
 - Keep the default access token lifetime of 15 minutes.
@@ -220,6 +223,20 @@ synchronization changes. Do not edit notes in it.
    answer, citing that note and its lines, and request lines with
    `status=200` in `journalctl -u knowledge-server`.
 
+### Connect Claude.ai
+
+1. In Claude.ai, open Customize -> Connectors and select Add custom
+   connector.
+2. Enter the MCP server URL `https://<mcp-hostname>/mcp`, and choose OAuth
+   sign-in with Register automatically (dynamic client registration).
+3. Select Connect and sign in as the vault owner when Cloudflare asks.
+4. Check the connection as in step 3 of [Connect ChatGPT](#connect-chatgpt),
+   with the connector turned on in the chat's + -> Connectors menu.
+
+Claude.ai chooses when to call the tools from their names and descriptions.
+To make it search the notes, mention them in the question or in your
+Claude.ai instructions.
+
 ## Operate the services
 
 | Action | Command |
@@ -243,7 +260,7 @@ From a shell on the VM, run:
 sudo systemctl disable --now cloudflared knowledge-server
 ```
 
-Both services stop and stay stopped after a reboot. ChatGPT's tool calls
+Both services stop and stay stopped after a reboot. Remote tool calls
 then fail. Issued OAuth tokens stay valid until they expire, but they reach
 nothing while the services are stopped. To resume, run
 `sudo systemctl enable --now knowledge-server cloudflared`.
@@ -327,7 +344,7 @@ No OAuth token is stored in the VM.
 | 421 | **HTTP Host Header** in the tunnel route is not `public_host`. |
 | 403 | The request sent an `Origin` header that `allowed_origins` does not list. |
 | Cloudflare cannot reach the origin | The server is stopped, or the route uses `localhost`, which can resolve to IPv6 `::1`; use `127.0.0.1`. |
-| ChatGPT cannot connect, or Cloudflare blocks requests | Check the redirect allowlist in [Prepare Cloudflare](#prepare-cloudflare), and Cloudflare's challenge and security events, as the [edge configuration](design-decisions.md#edge-configuration) describes. |
+| A client cannot connect, or Cloudflare blocks requests | Check the redirect allowlist in [Prepare Cloudflare](#prepare-cloudflare), and Cloudflare's challenge and security events, as the [edge configuration](design-decisions.md#edge-configuration) describes. |
 | `event category=tool-failed` | Repeat the call over stdio with the same root; the stdio log names the exception type and location. |
 
 If none of these applies, check `systemctl status knowledge-server` and the
@@ -341,7 +358,7 @@ sample notes from the installed checkout:
    `mode = "synthetic"` and
    `root = "/opt/knowledge-server/tests/fixtures/vault"`, and run
    `sudo systemctl restart knowledge-server`.
-2. Ask ChatGPT: "Which CPU does my NAS use? Cite the note and line."
+2. Ask the client: "Which CPU does my NAS use? Cite the note and line."
    Expected result: "AMD Ryzen 5 2600X", citing
    `infrastructure/nas-configuration.md`, line 7.
 3. Set `mode` and `root` back to their vault values and restart.
