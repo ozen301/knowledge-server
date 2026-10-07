@@ -72,10 +72,8 @@ define the resulting codes and the remaining order of checks.
 
 ## Initial limits
 
-These values are enforced. The [retrieval
-questions](sample-notes.md#known-weaknesses) found no reason to change the
-read limits. Tests may inject smaller limits to
-exercise boundaries without large or slow fixtures.
+These values are enforced. Tests may inject smaller limits to exercise
+boundaries without large or slow fixtures.
 
 | Setting | Initial value |
 |---|---|
@@ -385,8 +383,9 @@ knowledge vault. Only the HTTP entry point serves them, and only when its
   and then moves it into place, so readers see the old or the new file and
   never a partial one. One lock serializes all writes of the process, so a
   hash check and the write that depends on it cannot interleave with another
-  write. A failed request leaves no new proposal behind. The vault owner
-  stops the service while merging, so no write runs during a merge.
+  write. A failed request leaves no new proposal behind. The [review
+  script](design-decisions.md#vm-services-and-network) deletes reviewed
+  proposals only while the service is stopped.
 - **Results.** Both tools return `path`, the root-relative path of the
   proposal (`inbox/P`), and `content_sha256`, the SHA-256 of the bytes
   written. That is the hash `knowledge_read` reports for the proposal, so a

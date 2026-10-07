@@ -1,0 +1,374 @@
+#!/usr/bin/env bash
+# Review write proposals in a separate clone of the vault remote.
+#
+# Usage: review-proposals [--done]
+#
+# Without an argument, apply every proposal in the inbox of the root to
+# the review clone. Review the changes in an editor: commit what you accept,
+# discard what you reject, and push. Then run `review-proposals --done` to
+# delete the finished proposals from the inbox. Proposals whose changes are
+# still uncommitted can be kept for the next review.
+#
+# KNOWLEDGE_ROOT names the root (default /srv/knowledge-vault), and
+# KNOWLEDGE_REVIEW_CLONE the review clone (default ~/vault-review). The guide
+# for web clients, docs/use-with-web-clients.md, describes the procedure.
+#
+# The server never reads the review clone, so unreviewed text is never served.
+# The server keeps running, except while `--done` deletes proposals: then no
+# write can change a proposal between its hash check and its deletion.
+
+set -euo pipefail
+
+# Note names can contain characters such as `*`, which Git would otherwise
+# read as pathspec patterns.
+export GIT_LITERAL_PATHSPECS=1
+
+readonly service=knowledge-server
+root=${KNOWLEDGE_ROOT:-/srv/knowledge-vault}
+clone=${KNOWLEDGE_REVIEW_CLONE:-$HOME/vault-review}
+inbox=$root/inbox
+
+die() {
+    printf 'review-proposals: %s\n' "$*" >&2
+    exit 1
+}
+
+usage() {
+    echo "usage: review-proposals [--done]" >&2
+    exit 2
+}
+
+# Ask a yes/no question on stdin; only an answer starting with y means yes.
+confirm() {
+    local answer=
+    read -r -p "$1 [y/N] " answer || true
+    [[ $answer == [yY]* ]]
+}
+
+sha256() {
+    local sum
+    sum=$(sha256sum <"$1") || return 1
+    printf '%s\n' "${sum%% *}"
+}
+
+# The state file has one line per proposal: status (pending, applied, or
+# later), proposal SHA-256, base-copy SHA-256 or "-", and the vault path,
+# separated by tabs. The write tools reject control characters in paths, so
+# a path holds no tab or line break.
+statuses=()
+proposal_sums=()
+base_sums=()
+paths=()
+
+load_state() {
+    local status proposal_sum base_sum path
+    statuses=() proposal_sums=() base_sums=() paths=()
+    while IFS=$'\t' read -r status proposal_sum base_sum path; do
+        statuses+=("$status")
+        proposal_sums+=("$proposal_sum")
+        base_sums+=("$base_sum")
+        paths+=("$path")
+    done <"$state"
+}
+
+# Replace the state file through a rename, so it never holds a partial line.
+save_state() {
+    local i
+    for i in "${!paths[@]}"; do
+        printf '%s\t%s\t%s\t%s\n' "${statuses[i]}" "${proposal_sums[i]}" \
+            "${base_sums[i]}" "${paths[i]}"
+    done >"$state.tmp"
+    mv -- "$state.tmp" "$state"
+}
+
+# Set `clone_status` to the porcelain status of the review clone, limited to
+# the given paths. Stop if Git fails, so a failure never looks clean.
+clone_status() {
+    clone_status=$(git -C "$clone" status --porcelain --untracked-files=all \
+        -- "$@") || die "git status failed in $clone; see the Git message above."
+}
+
+has_status() {
+    local status
+    for status in "${statuses[@]}"; do
+        [[ $status == "$1" ]] && return 0
+    done
+    return 1
+}
+
+# Return a note's working-tree and index entry to HEAD, and remove it if HEAD
+# does not have it.
+restore_note() {
+    local note=$prefix$1
+    if git -C "$clone" cat-file -e "HEAD:$note" 2>/dev/null; then
+        git -C "$clone" restore --source=HEAD --staged --worktree -- "$note"
+    else
+        git -C "$clone" reset --quiet -- "$note"
+        rm -f -- "$clone/$note"
+    fi
+}
+
+install_hook() {
+    local hook expected
+    hook=$(git -C "$clone" rev-parse --path-format=absolute \
+        --git-path hooks/pre-commit)
+    expected=$(
+        cat <<'EOF'
+#!/bin/sh
+# Installed by review-proposals: refuse commits that add conflict markers.
+# "=======" is not checked, because Markdown uses it under headings.
+if git diff --cached --no-color --no-ext-diff -U0 |
+    grep -Eq '^\+(<{7}|>{7})( |$)'; then
+    echo "pre-commit: the staged changes contain conflict markers;" \
+        "resolve them first." >&2
+    exit 1
+fi
+EOF
+    )
+    if [[ -e $hook || -L $hook ]]; then
+        [[ $(<"$hook") == "$expected" ]] ||
+            die "$hook is a different pre-commit hook; remove it or move it."
+        # Git ignores a hook that is not executable.
+        [[ -x $hook ]] || chmod +x -- "$hook"
+        return
+    fi
+    mkdir -p -- "$(dirname -- "$hook")"
+    printf '%s\n' "$expected" >"$hook"
+    chmod +x -- "$hook"
+}
+
+# Apply every proposal to the review clone.
+apply() {
+    local i path note status rc summary
+    local -a found
+    if [[ -e $state ]]; then
+        load_state
+        has_status pending ||
+            die "A review is in progress. Finish it with: review-proposals --done"
+        echo "An earlier application was interrupted. It changed these notes:"
+        printf '  %s\n' "${paths[@]}"
+        confirm "Discard those changes and apply the proposals again?" || exit 1
+        for path in "${paths[@]}"; do
+            restore_note "$path"
+        done
+        rm -f -- "$state"
+    fi
+
+    [[ -d $inbox ]] || die "$inbox does not exist."
+    # Hidden names hold base copies and temporary files, never proposals.
+    mapfile -d '' found < <(
+        cd -- "$inbox" &&
+            find . -mindepth 1 -name '.*' -prune -o -type f -iname '*.md' \
+                -print0 | sort -z
+    )
+    if [[ ${#found[@]} -eq 0 ]]; then
+        echo "No proposals."
+        return
+    fi
+
+    clone_status
+    [[ -z $clone_status ]] ||
+        die "The review clone has uncommitted changes;" \
+            "commit or discard them first."
+    install_hook
+    git -C "$clone" pull --quiet --ff-only ||
+        die "Cannot pull the review clone; see the Git message above."
+
+    # Copy the proposals first, so the recorded hashes describe the bytes that
+    # are applied even if the server replaces a proposal meanwhile.
+    tmp=$(mktemp -d)
+    paths=() statuses=() proposal_sums=() base_sums=()
+    for i in "${!found[@]}"; do
+        path=${found[i]#./}
+        [[ $path != *[[:cntrl:]]* ]] ||
+            die "An inbox path contains a control character; move it by hand."
+        cp -- "$inbox/$path" "$tmp/$i.proposal" ||
+            die "Cannot copy the proposal $path."
+        proposal_sums+=("$(sha256 "$tmp/$i.proposal")")
+        if [[ -e $inbox/.base/$path ]]; then
+            cp -- "$inbox/.base/$path" "$tmp/$i.base" ||
+                die "Cannot copy the base copy of $path."
+            base_sums+=("$(sha256 "$tmp/$i.base")")
+        else
+            base_sums+=("-")
+        fi
+        paths+=("$path")
+        statuses+=(pending)
+    done
+    save_state
+
+    : >"$tmp/empty"
+    summary=()
+    for i in "${!paths[@]}"; do
+        path=${paths[i]}
+        note=$clone/$prefix$path
+        rc=0
+        if [[ ${base_sums[i]} != - && -e $note ]]; then
+            git -C "$clone" merge-file -L current -L base -L proposal -- \
+                "$note" "$tmp/$i.base" "$tmp/$i.proposal" || rc=$?
+            status=applied
+        elif [[ ${base_sums[i]} == - && -e $note ]]; then
+            git -C "$clone" merge-file -L current -L base -L proposal -- \
+                "$note" "$tmp/empty" "$tmp/$i.proposal" || rc=$?
+            status="note added in the vault since the proposal"
+        else
+            mkdir -p -- "$(dirname -- "$note")"
+            cp -- "$tmp/$i.proposal" "$note"
+            git -C "$clone" add --intent-to-add -- "$prefix$path"
+            status=applied
+            [[ ${base_sums[i]} == - ]] ||
+                status="note deleted in the vault since the proposal"
+        fi
+        if ((rc > 127)); then
+            die "git merge-file failed for $path. Run review-proposals again" \
+                "to discard the partial application."
+        elif ((rc == 1)); then
+            status="$status, 1 conflict"
+        elif ((rc > 1)); then
+            status="$status, $rc conflicts"
+        fi
+        statuses[i]=applied
+        save_state
+        summary+=("  $path: $status")
+    done
+
+    printf 'Applied %d proposals to %s:\n' "${#paths[@]}" "$clone"
+    printf '%s\n' "${summary[@]}"
+    cat <<'EOF'
+Next steps: review the changes in your editor. Commit what you accept,
+discard what you reject, resolve any conflict markers, and push.
+Then run: review-proposals --done
+EOF
+}
+
+# Require that HEAD reached the branch that the local vault checkout follows.
+check_published() {
+    local branch remote merge url upstream
+    branch=$(git -C "$root" symbolic-ref --quiet --short HEAD) ||
+        die "The local vault checkout is not on a branch."
+    remote=$(git -C "$root" config --get "branch.$branch.remote") ||
+        die "The branch $branch has no remote."
+    merge=$(git -C "$root" config --get "branch.$branch.merge") ||
+        die "The branch $branch has no upstream branch."
+    url=$(git -C "$root" remote get-url "$remote") ||
+        die "Cannot read the URL of the remote $remote."
+    git -C "$clone" fetch --quiet "$url" "$merge" ||
+        die "Cannot fetch $merge; see the Git message above."
+    upstream=$(git -C "$clone" rev-parse --verify --quiet \
+        'FETCH_HEAD^{commit}') ||
+        die "Cannot read the fetched $merge."
+    git -C "$clone" merge-base --is-ancestor HEAD "$upstream" ||
+        die "The review clone has commits that $merge does not have." \
+            "Push them to that branch first."
+}
+
+start_service() {
+    sudo systemctl start "$service" && return
+    echo "review-proposals: Cannot start $service. Start it with:" >&2
+    echo "  sudo systemctl start $service" >&2
+    return 1
+}
+
+# The proposal or base copy at $1 is unchanged, or already deleted.
+unchanged() {
+    local file=$1 sum=$2
+    if [[ $sum == - ]]; then
+        [[ ! -e $file && ! -L $file ]]
+    elif [[ -e $file ]]; then
+        [[ $(sha256 "$file") == "$sum" ]]
+    fi
+}
+
+# Delete the finished proposals.
+finish() {
+    local i path
+    local -a unfinished=() deleted=() changed=() kept=()
+    if [[ ! -e $state ]]; then
+        echo "No review in progress."
+        return
+    fi
+    load_state
+    ! has_status pending ||
+        die "An application was interrupted. Run review-proposals to discard" \
+            "it and apply the proposals again."
+    check_published
+
+    for i in "${!paths[@]}"; do
+        [[ ${statuses[i]} == applied ]] || continue
+        clone_status "$prefix${paths[i]}"
+        [[ -z $clone_status ]] || unfinished+=("$i")
+    done
+    if [[ ${#unfinished[@]} -gt 0 ]]; then
+        echo "These proposals still have uncommitted changes:"
+        for i in "${unfinished[@]}"; do
+            printf '  %s\n' "${paths[i]}"
+        done
+        confirm "Keep them for later and discard your changes to their notes?" ||
+            exit 1
+        for i in "${unfinished[@]}"; do
+            statuses[i]=later
+        done
+        save_state
+    fi
+    # Restore every `later` note, also those of an interrupted earlier run.
+    for i in "${!paths[@]}"; do
+        if [[ ${statuses[i]} == later ]]; then
+            restore_note "${paths[i]}"
+            kept+=("${paths[i]}")
+        fi
+    done
+
+    # Start the server however the command ends, and keep the state file
+    # until it runs again, so that a retry can finish the work.
+    trap start_service EXIT
+    sudo systemctl stop "$service" || die "Cannot stop $service."
+    for i in "${!paths[@]}"; do
+        [[ ${statuses[i]} == applied ]] || continue
+        path=${paths[i]}
+        if unchanged "$inbox/$path" "${proposal_sums[i]}" &&
+            unchanged "$inbox/.base/$path" "${base_sums[i]}"; then
+            sudo -u "$service" rm -f -- "$inbox/$path"
+            sudo -u "$service" rm -f -- "$inbox/.base/$path"
+            deleted+=("$path")
+        else
+            changed+=("$path")
+        fi
+    done
+    sudo -u "$service" find "$inbox" -mindepth 1 -depth -type d -empty -delete
+    # Keep the trap until the start succeeds; after a failed start, exit
+    # without a second attempt.
+    start_service || { trap - EXIT; exit 1; }
+    trap - EXIT
+    rm -f -- "$state"
+
+    printf 'Deleted %d proposals.\n' "${#deleted[@]}"
+    if [[ ${#kept[@]} -gt 0 ]]; then
+        echo "Kept for later:"
+        printf '  %s\n' "${kept[@]}"
+    fi
+    if [[ ${#changed[@]} -gt 0 ]]; then
+        echo "Kept, because they changed during the review:"
+        printf '  %s\n' "${changed[@]}"
+    fi
+    echo "Started $service."
+}
+
+case $# in
+    0) mode=apply ;;
+    1) [[ $1 == --done ]] || usage; mode=finish ;;
+    *) usage ;;
+esac
+
+[[ -d $root ]] || die "The root $root does not exist."
+[[ -d $clone ]] ||
+    die "The review clone $clone does not exist; clone the vault remote there."
+prefix=$(git -C "$root" rev-parse --show-prefix) ||
+    die "The root $root is not in a Git checkout."
+state=$(git -C "$clone" rev-parse --path-format=absolute \
+    --git-path review-proposals) ||
+    die "The review clone $clone is not a Git checkout."
+tmp=
+trap '[[ -z $tmp ]] || rm -rf -- "$tmp"' EXIT
+# Run the EXIT trap also when a signal ends the script.
+trap 'exit 1' INT TERM HUP
+"$mode"

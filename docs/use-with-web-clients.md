@@ -41,6 +41,7 @@ distribution, also adjust the package installation, the Python path, and, if
 | cloudflared unit and tunnel token | Created by `cloudflared service install`; the token is in a root-only file in `/etc/cloudflared` |
 | Vault checkout | `/srv/knowledge-vault`, owned by the administrator's account |
 | Inbox for write proposals (optional) | `/srv/knowledge-vault/inbox`, owned by the service account, and the unit drop-in `/etc/systemd/system/knowledge-server.service.d/inbox.conf` |
+| Review clone for proposals (optional) | `~/vault-review`, owned by the administrator's account, and the script `/opt/knowledge-server/deploy/review-proposals` |
 | Synchronization | A line in the administrator's crontab |
 | Logs | `journalctl -u knowledge-server`, `journalctl -u cloudflared` |
 | Cloudflare and client settings | The Cloudflare dashboard, and the connector settings in ChatGPT and Claude.ai |
@@ -91,8 +92,8 @@ published route only after the server runs with the owner subject.
 ### Set up the vault checkout
 
 The server reads a dedicated checkout, `/srv/knowledge-vault`. Only the
-synchronization and your [review of proposals](#review-proposals) change it;
-do not edit notes in it otherwise.
+synchronization changes it, or a [review of proposals](#review-proposals) by
+hand; do not edit notes in it otherwise.
 
 1. Install Git and clone the vault remote with your account:
 
@@ -300,11 +301,28 @@ version rejects `write_proposals` and does not start.
    in `Read-only file system`. `Permission denied` instead means that only
    the file permissions protect the checkout: check that the unit has
    `ProtectSystem=strict`.
-5. In ChatGPT or Claude.ai, check that the connector lists
+5. Set up the review clone, where you [review proposals](#review-proposals)
+   with `deploy/review-proposals`. Clone the vault remote with your account,
+   and put the script on your `PATH`:
+
+   ```sh
+   git clone ssh://<nas-user>@<nas-host>/<path-to-vault.git> ~/vault-review
+   mkdir -p ~/.local/bin
+   ln -s /opt/knowledge-server/deploy/review-proposals ~/.local/bin/
+   ```
+
+   You push accepted proposals from this clone with the same key as the
+   synchronization, so that key needs push access. If Git has no commit
+   identity for your account, set `user.name` and `user.email` with
+   `git -C ~/vault-review config`. Ubuntu adds `~/.local/bin` to `PATH` at
+   the next login. The script uses `/srv/knowledge-vault` as the root
+   and `~/vault-review` as the review clone; for other paths, set
+   `KNOWLEDGE_ROOT` and `KNOWLEDGE_REVIEW_CLONE` in your shell profile.
+6. In ChatGPT or Claude.ai, check that the connector lists
    `knowledge_propose_note` and `knowledge_propose_edit`; if it does not,
    refresh the connector. Ask the client to save a short test note; it may
    write without asking for confirmation, because you asked for the write.
-   Then review or delete the test note as [Review
+   Then accept or reject the test note as [Review
    proposals](#review-proposals) describes.
 
 To disable writing, remove `write_proposals = true` and restart the server.
@@ -349,21 +367,79 @@ git -C /srv/knowledge-vault reset --hard '@{upstream}'
 ```
 
 **Warning:** The reset discards commits and changes that are only in the
-checkout, such as a merged proposal that you have not pushed. Push them
-first, or merge them again after the reset. The reset keeps the inbox,
+checkout, such as a proposal merged by hand that you have not pushed. Push
+them first, or merge them again after the reset. The reset keeps the inbox,
 because Git ignores it.
-
-Results during a pull can mix old and new files; repeat the question
-afterwards.
 
 ### Review proposals
 
 Agents save proposals in `/srv/knowledge-vault/inbox`. The proposal for the
 vault path `<note>` is `inbox/<note>`. An edit of an existing note also has
 a base copy, `inbox/.base/<note>`, of the version that it started from; a
-new note has none. Stop the server while you review, so that no write can
-change a proposal during the merge. Remote tool calls fail until you start
-it again.
+new note has none.
+
+`review-proposals` applies the proposals to the review clone that you set
+up in [Enable write proposals](#enable-write-proposals), where you review
+them in VS Code over Remote-SSH, or in another editor with a Git view. The
+server never reads the review clone, so it serves no unreviewed text, and it
+keeps running during the review.
+
+1. In a terminal on the VM, for example the VS Code terminal, run:
+
+   ```sh
+   review-proposals
+   ```
+
+   Expected result: one line per proposal, with its path and `applied` or
+   the number of conflicts. `No proposals.` means that there is nothing to
+   review.
+2. Open `~/vault-review` in VS Code and go through each changed note in the
+   Source Control view:
+   - **Accept:** edit the note if necessary and save it, then stage the
+     note or the changes that you accept, check them under **Staged
+     Changes**, and commit. Staging records the note as it is at that
+     moment; stage it again after a later edit.
+   - **Reject:** discard the changes. For a new note, this deletes the file.
+     Unstage staged changes first.
+   - **Later:** leave the changes uncommitted.
+
+   Conflicts are between `<<<<<<< current` (the vault's version) and
+   `>>>>>>> proposal` (the agent's version), separated by `=======`. Resolve
+   them before you commit; a hook that the script installs refuses commits
+   that contain these markers. If the summary says
+   `note added in the vault since the proposal`, the whole note is one
+   conflict between the two versions. If it says
+   `note deleted in the vault since the proposal`, the note comes back as a
+   new file: commit it to restore the note, or discard it.
+3. Push the commits with **Sync Changes**. If the push is refused because
+   the remote has new commits, first commit or discard the remaining
+   changes, and then sync again. A discard loses your corrections, but the
+   original proposal stays in the inbox.
+4. Save all files (**File -> Save All**), so that no unsaved edit is
+   missing, then run:
+
+   ```sh
+   review-proposals --done
+   ```
+
+   The command checks that your commits reached the branch that the local
+   vault checkout follows. If notes still have uncommitted changes, it lists
+   them and asks whether to keep their proposals for later; yes discards
+   your changes to those notes. Then it stops the server, deletes the
+   finished proposals with their base copies, and starts the server.
+   Expected result: `Deleted <n> proposals.` and `Started knowledge-server.`
+   A proposal that changed during the review stays in the inbox for the
+   next review.
+
+The next synchronization brings the merged notes to the local vault
+checkout. If a command is interrupted, run it again:
+`review-proposals --done` continues where it stopped, and
+`review-proposals` offers to discard a partial application and apply the
+proposals again. Neither deletes a proposal that it did not finish.
+
+**Review by hand.** Without the script, merge in the local vault checkout.
+Stop the server while you review, so that no write can change a proposal
+during the merge. Remote tool calls fail until you start it again.
 
 1. Stop the server and update the checkout:
 

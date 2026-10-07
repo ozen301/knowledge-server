@@ -205,27 +205,13 @@ listens on `127.0.0.1` (loopback), so only programs in the same network
 namespace, such as others on the same machine, can connect. The [HTTP
 contract](http-contract.md) specifies its exact checks, and the [design
 decisions](design-decisions.md#why-this-remote-route) explain the remote route
-and the VM services.
-
-In the deployed route, ChatGPT reaches the server through Cloudflare:
-
-```text
-ChatGPT
-    -> Cloudflare Access (vault owner sign-in with Managed OAuth)
-    -> Cloudflare Tunnel
-    -> cloudflared on the VM
-    -> knowledge-server-http on 127.0.0.1 on the same VM
-```
-
-Cloudflare Access acts as the OAuth server for ChatGPT's sign-in and serves
-the OAuth discovery documents, so this server implements no OAuth.
-cloudflared opens an outbound connection to Cloudflare Tunnel, so the router
-needs no open inbound port. Cloudflare decrypts the traffic at its edge.
+through Cloudflare and the VM services.
 
 Each HTTP request passes a gate before any MCP handling, then reaches the
 same tools, knowledge core, and path policy as stdio. In stateless mode, the
 server keeps no MCP session between requests and answers with plain JSON
-instead of an event stream:
+instead of an event stream. [Trust boundaries](#trust-boundaries) explains
+the checks:
 
 ```text
 HTTP request
@@ -235,39 +221,13 @@ HTTP request
     -> the same tools -> knowledge core -> root
 ```
 
-- The `Host` header must name the configured public hostname or a loopback
-  name. The `Origin` header, which browsers and some other clients send, must
-  be absent or exactly match an entry in `allowed_origins`. That list names
-  sites, not users, and authenticates nobody.
-- The `Cf-Access-Jwt-Assertion` header, which Access adds to each request it
-  lets through, must hold the Access assertion: a JSON Web Token (JWT) that
-  Cloudflare signed for the configured Access application and the pinned
-  owner subject, which is the vault owner's identifier, verified privately
-  and fixed in the configuration. The server verifies the signature with
-  Cloudflare's public keys. The OAuth access token in the `Authorization`
-  header is meant for Cloudflare and never authenticates a request here.
-
-A request that fails a check is refused with fixed text before the SDK sees
-it. Only an authorized request counts toward the limit of requests in
-progress and has its body read, within limits on body size and read time.
-
 The launcher reads one private TOML file, named on the command line, that
-holds the launch mode, the root, and the Access settings. It ignores
-`KNOWLEDGE_ROOT` and `.env` files, so an environment prepared for stdio
-cannot point the HTTP server at the real vault; the root still passes the
-same validation in `config.py`. The mode has no default:
-
-- **Synthetic mode** serves the invented notes. Before serving, the launcher
-  compares the root with `synthetic-vault.json`, a packaged list of the
-  sample notes and their SHA-256 digests, and does not start if anything
-  differs. This check runs only at startup, and the tools read the directory
-  live afterwards, so keep the directory dedicated to the invented notes
-  while the server runs.
-- **Vault mode** serves a local vault checkout or one subtree of it. The
-  launcher refuses to start if it can write to the root, which catches a
-  launch outside the read-only service configuration. With
-  `write_proposals = true`, it also refuses to start unless it can write to
-  the inbox.
+holds the launch mode, the root, and the Access settings; it ignores
+`KNOWLEDGE_ROOT` and `.env` files. **Synthetic mode** serves only an exact
+copy of the invented sample notes, and **vault mode** serves a local vault
+checkout or a subtree of it, and refuses to start if it can write to the
+root. The HTTP contract's [launch modes](http-contract.md#launch-modes)
+give the rules.
 
 The code is in `adapter/`:
 
@@ -294,9 +254,13 @@ with a read-only view of the file system, and an example configuration. The
 and the vault synchronization. For write proposals, it adds a drop-in that
 makes only the inbox writable.
 
-The [HTTP contract](http-contract.md) gives the exact settings, checks, and
-limits, and its [owner identity](http-contract.md#owner-identity) section
-explains how the owner subject is established.
+`deploy/review-proposals` is a Bash script that the vault owner runs, not
+part of the server. It applies the proposals to a separate clone of the vault
+remote, which the server never reads, for review in an editor's Git view.
+Afterwards it stops the server briefly and deletes the reviewed proposals
+whose hashes still match the applied text. The [guide for web
+clients](use-with-web-clients.md#review-proposals) gives the procedure, and
+`tests/test_review_proposals.py` runs it on invented notes.
 
 ## Trust boundaries
 
@@ -356,8 +320,8 @@ Passing one check does not skip the next:
    the VM, can also connect to the loopback listener, so a request there did
    not necessarily come through Access. The gate accepts a request only if
    its Access assertion is signed by Cloudflare for the configured Access
-   application and the pinned owner subject. Only then does the SDK see the
-   request.
+   application and the pinned [owner subject](http-contract.md#owner-identity),
+   the vault owner's identifier. Only then does the SDK see the request.
 3. **Arguments.** Authentication shows who is calling, not that the
    arguments are safe. The adapter validates the raw arguments with the
    tool's request model, so the core receives a typed request and never sees
@@ -373,43 +337,3 @@ no authentication; argument validation and the file limits are the same as
 for HTTP. The [request gate](http-contract.md#listener-and-request-gate) and
 [assertion validation](http-contract.md#assertion-validation) rules give the
 exact Host, Origin, claim, signing-key, and request-limit checks.
-
-## Design choices worth knowing
-
-**Root-relative paths.** Callers and results use paths relative to the vault
-root, with `/` as the separator, such as `Projects/roadmap.md`. Paths and
-messages that the server generates never show the absolute path on the host.
-This keeps host details private and gives the agent a path it can cite. Text
-inside a note is returned as written, even if it contains a path.
-
-**Numbered read lines.** Read results put each line's number in front of its
-text, so that an agent can cite a line without counting lines. In early runs
-of the [retrieval questions](sample-notes.md#question-set), hosts often cited
-wrong lines when a read returned only the first and last line numbers.
-Search matches carry their line number in a separate field.
-
-**Git ignore rules do not hide notes.** The server reads the checkout's files
-directly and does not use Git to decide what exists. Ignore rules control what
-Git tracks, not who may read a file, so an ignored Markdown note is still
-visible through all four tools.
-
-**Symlinks are always rejected.** The policy rejects every symlink below the
-root, even one that points to another note in the vault. A symlink can point
-outside the vault, and it can be changed after the server checks it. A simple
-rule that allows no symlinks avoids both problems, and the loader refuses to
-follow a symlink even after the policy check has passed.
-
-## Where to go next
-
-- [Use with local MCP hosts](use-with-local-hosts.md): connecting the
-  server to a local MCP host, and how the tools behave.
-- [Use with web clients](use-with-web-clients.md): setting up and operating
-  the remote route for ChatGPT and Claude.ai.
-- [Tool contract](tool-contract.md): exact tool behavior, limits, and error
-  codes.
-- [HTTP contract](http-contract.md): the HTTP entry point's exact checks,
-  limits, and logging.
-- [Design decisions](design-decisions.md): why the server works as it does,
-  the remote route, and its trust boundary.
-- [Roadmap](roadmap.md): optional later work and how to start it.
-- [Repository guide](../AGENTS.md): development workflow and conventions.

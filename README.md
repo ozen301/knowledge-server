@@ -8,7 +8,9 @@ personal knowledge base: a folder of Markdown notes that you keep in Git. It
 works with local agents such as Claude Code and Codex CLI, and with web
 clients such as ChatGPT and Claude.ai. Agents read the notes but cannot edit
 them. Web clients can also propose new notes and edits, which take effect
-only when you review and merge them.
+only when you review and merge them. A script applies the proposals to a
+separate clone of your notes, where you review them in your editor's Git
+view.
 
 ## Quick start
 

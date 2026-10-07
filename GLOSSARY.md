@@ -36,6 +36,11 @@ takes effect only when the vault owner merges it into the knowledge vault.
 Each note has at most one pending proposal.
 _Avoid_: Draft
 
+**Review clone**:
+A clone of the vault remote in which the vault owner reviews proposals with
+`deploy/review-proposals`. The server never reads it.
+_Avoid_: Local vault checkout, worktree
+
 **Vault owner**:
 The person who owns the knowledge vault, directs this project, and makes the
 decisions that the documents leave open.

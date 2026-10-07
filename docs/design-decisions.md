@@ -22,13 +22,7 @@ This is a personal project. The vault owner is its only user and maintains it
 by hand, and availability is best effort: if the service stops, the owner
 restarts it. These assumptions keep operations simple. They do not weaken the
 note-access boundaries, which stay strict for every transport.
-
-The server exposes four read tools over stdio and a protected HTTP route. The
-HTTP route can also serve two write tools that save proposals. The server reads
-the local vault checkout, configured through `KNOWLEDGE_ROOT` for stdio or the
-configuration file for HTTP; the vault remote is used for synchronization and
-is not searchable.
-
+****
 The remote route needs one Linux host with systemd, here called the VM, that
 runs the server and cloudflared as services. The documents use the vault
 owner's own deployment as the **example deployment**: an Ubuntu 26.04 VM on
@@ -49,14 +43,17 @@ abstraction before a second backend exists.
    are visible. Git history is not searched, and synchronization remains a task
    for the vault owner, outside request handling.
 2. **Use one visibility policy for every tool.** Hidden paths, symlinks, and
-   unsupported types cannot become visible through another tool. Git ignore
-   rules are not an authorization system.
+   unsupported types cannot become visible through another tool. Every
+   symlink is rejected, even one to another note, because a symlink can point
+   outside the vault and can change after a check. Git ignore rules are not
+   an authorization system.
 3. **Start with literal search.** `ECC Ryzen` means that literal phrase, not
    semantic similarity or an implicit AND query. Future search modes must not
    silently change this behavior.
 4. **Make responses bounded and citable.** Return logical paths, line numbers,
    explicit truncation, and useful errors. Never expose server paths through
-   raw exceptions.
+   raw exceptions. Read results number every line, because hosts cited wrong
+   lines when a read returned only the first and last line numbers.
 5. **Keep stored text inert.** Notes are retrieved data, never executable
    instructions. The service does not execute embedded code or automatically
    fetch Markdown URLs.
@@ -74,9 +71,10 @@ abstraction before a second backend exists.
 8. **Writes are proposals that the vault owner reviews.** The service never
    changes a canonical note. Over HTTP, an agent can save a new note or an
    edit as a [proposal](tool-contract.md#write-proposals) in the inbox; it
-   takes effect only when the vault owner merges it in the checkout. Local
-   hosts can edit the vault directly, so stdio stays read-only. The service
-   unit, not only the path policy, limits the service's writes to the inbox.
+   takes effect only when the vault owner merges it into the knowledge vault.
+   Local hosts can edit the vault directly, so stdio stays read-only. The
+   service unit, not only the path policy, limits the service's writes to
+   the inbox.
 
 The design assumes that the vault owner controls the local vault checkout and
 that concurrent edits are trusted. Path checks and symlink rejection protect
@@ -200,7 +198,12 @@ account or plan; another deployment needs its own review.
   tool routes.
 - The tunnel routes only the MCP hostname to the loopback origin and returns
   404 for unmatched requests.
-- No Cloudflare caching rule overrides the origin's `Cache-Control: no-store`.
+- No Cache Rule or Page Rule, such as "cache everything", covers the MCP
+  hostname. Under Cloudflare's [default cache
+  behavior](https://developers.cloudflare.com/cache/concepts/default-cache-behavior/),
+  checked on 2026-10-05, MCP `POST` requests and Uvicorn's own 400 and 500
+  responses, which lack `Cache-Control: no-store`, are not cached; the edge's
+  handling of those Uvicorn responses has not been observed.
 - If requests fail, inspect Cloudflare's challenge and security events, and
   change only a setting shown to be incompatible, as narrowly as the service
   plan allows. Do not disable protections in bulk or assume that every feature
@@ -246,13 +249,22 @@ or hypervisor-specific deployment configuration are needed.
   stays under the vault owner's control, and a diverged history stops the
   pull instead of merging. A bare Git remote alone cannot serve as the
   readable collection. Add snapshot machinery only for a demonstrated need.
-- **Merging proposals.** The vault owner merges proposals in this checkout
-  and pushes them with the account's key, so the key needs push access.
-  The vault owner stops the service for the review, so no write can change
-  a proposal while it is merged; the remote route is unavailable for those
-  minutes. An edit merges with `git merge-file` against its base copy, so
+- **Merging proposals.** The review script, `deploy/review-proposals`,
+  applies proposals to a separate clone of the vault remote, which the
+  server never reads, so unreviewed text is never served. The vault owner
+  reviews, commits, and pushes there with the account's key, so the key
+  needs push access, and the cron pull brings the result to the local vault
+  checkout. An edit merges with `git merge-file` against its base copy, so
   changes that reached the note after the proposal was made are kept or
-  shown as conflicts.
+  shown as conflicts. The server keeps running during the review. The
+  script stops it only for the seconds in which it deletes reviewed
+  proposals, and deletes a proposal only if its hash is still the one it
+  applied, so a proposal changed during the review stays. A plain clone is
+  used rather than a Git worktree of the local vault checkout, because Git
+  does not check out `main` in two worktrees. On 2026-10-07, the vault owner
+  ran the script in the example deployment through the whole VS Code
+  workflow and accepted a note and an edit proposed from ChatGPT. Rejecting
+  a proposal from a client was not observed live; the tests cover it.
 - **Forwarded Host.** The dashboard-managed tunnel's route sends requests to
   `http://127.0.0.1:<port>` with **HTTP Host Header** set to `public_host`,
   which the gate accepts (`test_allowed_hosts` in `tests/test_http.py`).
@@ -276,18 +288,8 @@ A selection spread across several directories needs its own design. Only
 `vault` mode serves real notes, and only for a scope that the vault owner has
 authorized; a change of scope needs a new authorization. In the example
 deployment, the vault owner authorized the whole dedicated checkout,
-`/srv/knowledge-vault`, on 2026-10-05.
-
-### Edge cache
-
-By Cloudflare's [default cache
-behavior](https://developers.cloudflare.com/cache/concepts/default-cache-behavior/),
-checked on 2026-10-05, MCP `POST` requests to `/mcp` and Uvicorn's own 400 and
-500 responses, which lack `Cache-Control: no-store`, are not cached; the edge's
-handling of those Uvicorn responses has not been observed. A Cache Rule or Page
-Rule such as "cache everything" could change that, so none may cover the MCP
-hostname.
-
+`/srv/knowledge-vault`, on 2026-10-05.**
+**
 ## Shutdown and revocation
 
 Stopping cloudflared or the origin is the local shutdown: stopping either one
