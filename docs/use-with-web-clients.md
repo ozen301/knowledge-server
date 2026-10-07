@@ -52,12 +52,21 @@ Daily tasks, updates, the emergency stop, and troubleshooting are in
 ## Set up
 
 Before you start, the vault owner reads the [trust
-boundary](design-decisions.md#trust-boundary-and-data-handling) and
-authorizes the exposed scope: the whole vault checkout or one subtree of it.
-All visible `.md` notes in that scope become readable through the connector,
-including notes that later pulls add, and Cloudflare and the client's
-provider, OpenAI or Anthropic, handle the excerpts that the client receives.
-Replace each `<placeholder>`.
+boundary](design-decisions.md#trust-boundary-and-data-handling), reviews the
+client account's training, retention, and admin access, and authorizes the
+exposed scope: the whole vault checkout or one subtree of it. All visible
+`.md` notes in that scope become readable through the connector, including
+notes that later pulls add, and Cloudflare and the client's provider, OpenAI
+or Anthropic, handle the excerpts that the client receives. For a ChatGPT
+Business workspace, OpenAI's pages conflict on whether workspace admins can
+read members' conversations; treat chats that contain note excerpts as
+possibly visible to them. Repeat the review after a change of client account
+or plan.
+
+The VM needs outbound access to Cloudflare for cloudflared, and to
+`https://<team>.cloudflareaccess.com` for the server's [signing-key
+fetch](http-contract.md#assertion-validation). The unit does not restrict the
+network; a firewall must allow both. Replace each `<placeholder>`.
 
 ### Prepare Cloudflare
 
@@ -198,8 +207,11 @@ hand; do not edit notes in it otherwise.
    a systemd unit that starts cloudflared at boot.
 2. In the tunnel's published route for the MCP hostname, set the service to
    `http://127.0.0.1:8000`. Under **Additional application settings -> HTTP
-   Settings**, set **HTTP Host Header** to the configured `public_host`;
-   [forwarded Host](design-decisions.md#vm-services-and-network) explains why.
+   Settings**, set **HTTP Host Header** to the configured `public_host`.
+   Cloudflare does not document which Host cloudflared sends when this
+   setting is empty, and the server rejects any other Host. Use `127.0.0.1`,
+   not `localhost`, which can resolve to IPv6 `::1`, where the server does
+   not listen.
    Confirm that no Cache Rule or Page Rule covers the MCP hostname.
 3. Check that cloudflared received the route:
 

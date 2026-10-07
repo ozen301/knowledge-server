@@ -1,8 +1,8 @@
 # HTTP contract
 
-Status: implemented and deployed, updated 2026-10-07. This document specifies
-the protected HTTP entry point, `knowledge-server-http`: its configuration,
-launch modes, request checks, assertion and key rules, and logging.
+Status: implemented and deployed. This document specifies the protected
+HTTP entry point, `knowledge-server-http`: its configuration, launch modes,
+request checks, assertion and key rules, and logging.
 `tests/test_http.py` checks it offline. The [design
 decisions](design-decisions.md#why-this-remote-route) explain the route that
 it serves, and the [guide for web clients](use-with-web-clients.md) installs

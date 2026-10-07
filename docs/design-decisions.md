@@ -1,11 +1,11 @@
 # Design decisions
 
-Status: agreed design, updated 2026-10-07. This document explains why
-knowledge-server works as it does: its goal, the decisions to preserve, the
-remote route for ChatGPT, and its trust boundary. The [architecture
-overview](architecture.md) describes the components, the [tool
-contract](tool-contract.md) and the [HTTP contract](http-contract.md) specify
-exact behavior, and the [roadmap](roadmap.md) lists optional later work.
+This document explains why knowledge-server works as it does: its goal, the
+decisions to preserve, the remote route for web clients, and its trust
+boundary. The [architecture overview](architecture.md) describes the
+components, the [tool contract](tool-contract.md) and the [HTTP
+contract](http-contract.md) specify exact behavior, and the
+[roadmap](roadmap.md) lists optional later work.
 
 ## Goal
 
@@ -22,15 +22,9 @@ This is a personal project. The vault owner is its only user and maintains it
 by hand, and availability is best effort: if the service stops, the owner
 restarts it. These assumptions keep operations simple. They do not weaken the
 note-access boundaries, which stay strict for every transport.
-****
+
 The remote route needs one Linux host with systemd, here called the VM, that
-runs the server and cloudflared as services. The documents use the vault
-owner's own deployment as the **example deployment**: an Ubuntu 26.04 VM on
-an Unraid host, administered over Tailscale, with the vault remote on a NAS
-and a ChatGPT Business workspace as the client. Where a section names these
-settings, the client account review, the authorized scope, or observed
-results, it describes that example. Another deployment makes its own choices
-and repeats the reviews and checks.
+runs the server and cloudflared as services.
 
 The server is one Python package that runs as one process: an MCP adapter
 over an MCP-free knowledge core. Use ordinary typed functions and data models;
@@ -105,46 +99,36 @@ The synthetic HTTP mode and its manifest guard remain beside the real-vault
 mode. They serve as a troubleshooting and regression check with invented
 notes.
 
+
 ## Why this remote route
 
-Decided on 2026-10-02. ChatGPT is the first web client. It connects to a public
-HTTPS endpoint on a Cloudflare-managed domain. Cloudflare Access, with Managed
-OAuth and an owner-only policy, signs the vault owner in; Cloudflare Tunnel
-then forwards each request, with a signed assertion, to an HTTP entry point in
-the adapter layer. The core stays MCP-free, and stdio and the four tool
-contracts stay unchanged. The [HTTP contract](http-contract.md) specifies the
-entry point.
+Web clients, ChatGPT and Claude.ai, connect to a public HTTPS endpoint on a
+Cloudflare-managed domain. Cloudflare Access, with Managed OAuth and an
+owner-only policy, signs the vault owner in; Cloudflare Tunnel then forwards
+each request, with a signed assertion, to an HTTP entry point in the adapter
+layer. The core stays MCP-free, and stdio and the tool contracts stay
+unchanged. The [HTTP contract](http-contract.md) specifies the entry point.
 
 Reasons for this route:
 
 - OpenAI's Secure MCP Tunnel required an account association that could not
   be established. This route does not depend on it.
 - Cloudflare acts as the OAuth authorization server, so the project
-  implements no OAuth server. ChatGPT's documented OAuth requirements for
-  MCP servers ([OpenAI's authentication
-  guide](https://developers.openai.com/plugins/build/auth)) are the
-  compatibility target, and the deployment works with them.
+  implements no OAuth server. It also serves OAuth discovery and dynamic
+  client registration at the edge, so the origin serves only the MCP
+  endpoint.
 - cloudflared connects outbound, so no inbound router port forwarding is
-  needed. Administration stays on a private network, Tailscale in the
-  example deployment.
+  needed, and administration stays on a private network.
 - The origin also validates Cloudflare's signed assertion and the pinned
   owner identity, so a request that reaches it without passing Access cannot
   use the tools.
 
 Accepted limitations: Cloudflare handles decrypted traffic and keeps
-provider-side logs; OpenAI receives the tool results; immediate revocation of
-issued tokens after a policy change is not guaranteed, so the route relies on a
-verified emergency stop instead; and compatibility is confirmed only for the
-deployed client configuration. Some behaviors have not been observed live: a
-request from a second identity, which tests reject at the origin; signing-key
-rotation; and the refresh-grant exchange, although access continues beyond the
-token lifetime. The [trust boundary](#trust-boundary-and-data-handling) records
-the data handling review.
-
-WorkOS AuthKit is a fallback only if a demonstrated compatibility or identity
-limitation of Managed OAuth remains after configuration and debugging;
-account permissions or a blocked request do not prove one. Switching to it
-changes the trust boundary, so it needs a new design review.
+provider-side logs, the client's provider receives the tool results, and a
+policy change does not revoke issued tokens at once, so the route relies on
+the [emergency stop](#shutdown-and-revocation) instead. Replacing Managed
+OAuth, for example with WorkOS AuthKit, changes the trust boundary and needs
+a new design review.
 
 ## Trust boundary and data handling
 
@@ -152,73 +136,38 @@ TLS ends at the Cloudflare edge, and the tunnel encrypts traffic between
 Cloudflare and cloudflared. The last hop is plain HTTP on loopback, with
 cloudflared and the server running in the same VM. Cloudflare therefore
 handles decrypted requests and responses, including queries and note
-excerpts, and keeps its own operational logs. ChatGPT sends tool results to
-OpenAI's models, as local hosts send them to their providers. The
+excerpts, and keeps its own operational logs. The client sends tool results
+to its provider, OpenAI or Anthropic, as local hosts send them to theirs. The
 application's [log policy](http-contract.md#logging) covers only this
-application's logs, not Cloudflare's or OpenAI's.
+application's logs, not those of Cloudflare or the providers.
 
 Text that a client writes is untrusted, like note text. A proposal can hold
 anything the conversation produced, including instructions that a note or a
 web page injected. It reaches the knowledge vault only through the vault
 owner's review of the diff, and the read tools describe inbox notes as
-unreviewed. Proposal text crosses Cloudflare and OpenAI like excerpts do.
+unreviewed. Proposal text crosses Cloudflare and the provider like excerpts
+do.
 
-Compatibility between ChatGPT, Managed OAuth, and the SDK's HTTP transport
-is confirmed for the example deployment's configuration only. Before real
-notes are served, review the dependencies above and the client account's
-training, retention, and admin access. For the example deployment, the vault
-owner authorized the [exposed scope](#exposed-scope) after this review:
-
-- **Client account.** The client is a ChatGPT Business workspace that the
-  vault owner's lab administers. OpenAI does not train on Business content by
-  default, and the vault owner confirmed that the training setting is off.
-  The workspace sets no retention policy of its own, and the lab's rules
-  allow connecting personal data. Workspace admins control developer mode, so
-  they can disable the connector.
-- **Admin access.** OpenAI's sources conflict on whether Business admins can
-  read members' conversations: its Business help pages say that admins cannot
-  see members' private chats and that data export is not available, but the
-  Business section of its [enterprise privacy
-  page](https://openai.com/enterprise-privacy/) says that admins can view,
-  access, export, and delete conversations. Treat chats that contain note
-  excerpts as possibly visible to the workspace admins.
-- **Retention.** Chats are kept until deleted. After a member leaves the
-  workspace, the workspace keeps their chats; they are not transferred.
-
-These account statements come from an external model's reading of OpenAI's
-pages and from search snippets, because the pages refused automated access;
-they were not checked page by page. Recheck them after a change of client
-account or plan; another deployment needs its own review.
+Because these parties see note text, real notes are served only after the
+vault owner has reviewed them and the client account's training, retention,
+and admin access, and has authorized the [exposed scope](#exposed-scope).
 
 ## Edge configuration
 
-- A dedicated self-hosted Access application, with Managed OAuth enabled,
-  covers the whole MCP hostname. No other service shares the hostname.
-- An allow policy admits only the vault owner's identity, with no bypass for
+The edge admits only the vault owner and nothing else reaches the origin:
+
+- One dedicated Access application covers the whole MCP hostname, no other
+  service shares the hostname, and the tunnel routes only this hostname to
+  the origin. Another route or policy on the hostname could otherwise expose
+  the tools.
+- The allow policy admits only the vault owner's identity, with no bypass for
   tool routes.
-- The tunnel routes only the MCP hostname to the loopback origin and returns
-  404 for unmatched requests.
-- No Cache Rule or Page Rule, such as "cache everything", covers the MCP
-  hostname. Under Cloudflare's [default cache
-  behavior](https://developers.cloudflare.com/cache/concepts/default-cache-behavior/),
-  checked on 2026-10-05, MCP `POST` requests and Uvicorn's own 400 and 500
-  responses, which lack `Cache-Control: no-store`, are not cached; the edge's
-  handling of those Uvicorn responses has not been observed.
-- If requests fail, inspect Cloudflare's challenge and security events, and
-  change only a setting shown to be incompatible, as narrowly as the service
-  plan allows. Do not disable protections in bulk or assume that every feature
-  can be excluded per host; if the plan cannot scope a change, reassess.
-
-## Discovery and registration
-
-Cloudflare Access serves OAuth discovery and registration at the edge; the
-origin serves only the MCP endpoint. If a future integration requires
-origin-served discovery, it needs a separate specification and must never
-expose tools without a valid assertion. ChatGPT registers with dynamic client
-registration, which it selects automatically because Cloudflare does not
-advertise client ID metadata documents (CIMD). Revisit CIMD only if the
-provider advertises support and there is a concrete operational reason to
-change.
+- No Cache Rule or Page Rule covers the MCP hostname, so the edge never
+  serves a stored response, which could contain note text, to another
+  request.
+- If Cloudflare blocks requests, change only a setting shown to be
+  incompatible, as narrowly as the plan allows, so that the other
+  protections stay in place. Do not disable protections in bulk.
 
 ## Runtime isolation
 
@@ -232,17 +181,15 @@ Each write request is bounded, but the inbox has no bound on its total size
 or number of proposals. Only the vault owner can call the tools, and the
 vault owner deletes merged proposals. A full inbox can fill the VM's disk,
 but it cannot change a canonical note. Do not rely on the client to confirm
-writes: in the example deployment, ChatGPT wrote without asking when the
-vault owner had asked it to write. Only ChatGPT has been used to write.
+writes: ChatGPT has written without asking when the vault owner had asked it
+to write.
 
 ### VM services and network
 
-The server and cloudflared run as systemd services in the same VM,
-communicating over loopback; the [guide for web
-clients](use-with-web-clients.md) installs and operates them. cloudflared runs
-a dashboard-managed tunnel, installed with `cloudflared service install`, so
-the tunnel's routes are configured in the Cloudflare dashboard. No containers
-or hypervisor-specific deployment configuration are needed.
+The server and cloudflared run as systemd services in the same VM and
+communicate over loopback; the [guide for web
+clients](use-with-web-clients.md) installs and operates them. No containers
+or hypervisor-specific configuration are needed.
 
 - **Synchronization.** The server never runs Git. A cron job of the vault
   owner's account fast-forwards a dedicated checkout, so synchronization
@@ -252,32 +199,12 @@ or hypervisor-specific deployment configuration are needed.
 - **Merging proposals.** The review script, `deploy/review-proposals`,
   applies proposals to a separate clone of the vault remote, which the
   server never reads, so unreviewed text is never served. The vault owner
-  reviews, commits, and pushes there with the account's key, so the key
-  needs push access, and the cron pull brings the result to the local vault
-  checkout. An edit merges with `git merge-file` against its base copy, so
-  changes that reached the note after the proposal was made are kept or
-  shown as conflicts. The server keeps running during the review. The
-  script stops it only for the seconds in which it deletes reviewed
-  proposals, and deletes a proposal only if its hash is still the one it
-  applied, so a proposal changed during the review stays. A plain clone is
-  used rather than a Git worktree of the local vault checkout, because Git
-  does not check out `main` in two worktrees. On 2026-10-07, the vault owner
-  ran the script in the example deployment through the whole VS Code
-  workflow and accepted a note and an edit proposed from ChatGPT. Rejecting
-  a proposal from a client was not observed live; the tests cover it.
-- **Forwarded Host.** The dashboard-managed tunnel's route sends requests to
-  `http://127.0.0.1:<port>` with **HTTP Host Header** set to `public_host`,
-  which the gate accepts (`test_allowed_hosts` in `tests/test_http.py`).
-  Cloudflare's [origin
-  parameters](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/cloudflared-parameters/origin-parameters/)
-  do not state which Host cloudflared sends when the setting is empty, so
-  the route sets it explicitly. `127.0.0.1` instead of `localhost` avoids
-  an IPv6 `::1` connection, on which the origin does not listen.
-- **Outbound access.** cloudflared connects to Cloudflare, and the origin
-  fetches signing keys from the [trusted key
-  URL](http-contract.md#assertion-validation). Neither the unit nor this
-  configuration restricts the network, so both paths stay open; a firewall
-  added later must allow them.
+  commits and pushes there, so the account's key needs push access, and the
+  cron pull brings the result to the local vault checkout. The server keeps
+  running during the review; the script stops it only while it deletes
+  reviewed proposals, so that no write can interleave with the deletion. It
+  uses a plain clone rather than a Git worktree of the local vault checkout,
+  because Git does not check out `main` in two worktrees.
 
 ### Exposed scope
 
@@ -286,26 +213,20 @@ subtree, with read-only access for the server except in the inbox when write
 proposals are enabled; tool paths and citations are relative to that root.
 A selection spread across several directories needs its own design. Only
 `vault` mode serves real notes, and only for a scope that the vault owner has
-authorized; a change of scope needs a new authorization. In the example
-deployment, the vault owner authorized the whole dedicated checkout,
-`/srv/knowledge-vault`, on 2026-10-05.**
-**
+authorized; a change of scope needs a new authorization.
+
 ## Shutdown and revocation
 
 Stopping cloudflared or the origin is the local shutdown: stopping either one
 removes access, and access returns after it restarts. The [emergency
 stop](use-with-web-clients.md#emergency-stop) stops and disables both. It
-depends on management access to the VM: in the example deployment, through
-Tailscale SSH or the Unraid VM console. The vault owner accepted that
-dependency, so a Cloudflare-side route shutdown was not tested; Cloudflare does
-not document how deleting a published route affects active connections. If a
-stop without VM access becomes necessary, test deleting the route, with Access
-protection in place, before relying on it.
+depends on management access to the VM, which the vault owner accepted.
+Cloudflare does not document how deleting a published route affects active
+connections, so a stop from the Cloudflare side is not relied on; test it,
+with Access protection in place, before relying on it.
 
 Never disable or delete Access protection as a kill switch, because removing
 the gate does not stop routing. A policy change alone is not a verified stop.
 A dedicated, tested deny-all policy may add protection, but do not assume it
-acts at once. Managed OAuth reevaluates policy when a token is refreshed, so a
-policy change may not revoke issued tokens immediately. Measuring that delay
-is optional; without a measurement, assume that issued tokens stay valid until
-they expire.
+acts at once. Managed OAuth reevaluates policy when a token is refreshed, so
+assume that issued tokens stay valid until they expire.

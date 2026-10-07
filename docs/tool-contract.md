@@ -1,12 +1,11 @@
 # Tool contract
 
-Status: agreed implementation contract, updated 2026-10-07. This document
-specifies the four read tools, the two [write tools](#write-proposals), their
-limits, and their errors. Changes should update this document and the
-corresponding tests together. The protected [HTTP entry
-point](http-contract.md) serves the read tools with the same behavior and, when
-its configuration enables them, the write tools. Stdio serves only the read
-tools.
+Status: agreed implementation contract. This document specifies the four
+read tools, the two [write tools](#write-proposals), their limits, and their
+errors. Changes should update this document and the corresponding tests
+together. The protected [HTTP entry point](http-contract.md) serves the read
+tools with the same behavior and, when its configuration enables them, the
+write tools. Stdio serves only the read tools.
 
 ## Configuration and common policy
 

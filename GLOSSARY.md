@@ -7,7 +7,7 @@ synchronized copies, and the roles of the people and agents who work on it.
 
 **Knowledge vault**:
 The vault owner's authoritative collection of Markdown notes, versioned with
-Git.
+Git. The term comes from Obsidian, which calls a folder of notes a vault.
 
 **Vault remote**:
 The NAS-hosted Git repository used as the synchronization source for local

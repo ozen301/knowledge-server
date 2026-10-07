@@ -119,8 +119,9 @@ pattern determine structure and style:
   behavior. Identify features that are not implemented, and mark proposals and
   open decisions clearly.
 - **Reader-friendly:** give the context the reader needs to understand and act.
-  Keep precise technical terms, but spare the reader needless linguistic
-  effort.
+  Write for a reader without the author's context: introduce a term or concept
+  before relying on it. Keep precise technical terms, but spare the reader
+  needless linguistic effort.
 - **Coherent:** ideas connect logically, the structure fits the content, and
   terms stay consistent across documents.
 - **Succinct:** cut words and repetition that do not help the reader; keep the
@@ -145,9 +146,17 @@ Conventions:
 - Avoid filler and canned conclusions such as "leverage," "it's worth noting,"
   "Bottom Line," and "In short."
 - Define planned work as tasks in `docs/roadmap.md`. When a task is complete,
-  remove its entry and summarize new capabilities in the README features.
-  Record a limitation that the validation leaves open, such as behavior not
-  observed live, with the decision it concerns in `docs/design-decisions.md`.
+  remove its entry.
+- Put each topic in the document whose role it serves. The design decisions
+  record decisions, their reasons, and the risks the design accepts; the
+  architecture overview describes the components; the contracts specify
+  behavior; the guides give procedures and operational caveats. Do not merely
+  describe how something works or how to set it up in the design decisions.
+- Record a limitation that validation leaves open only where it helps a
+  reader: in the design decisions when it explains a decision or an accepted
+  risk, and in the relevant guide when it is an operational caveat. Leave
+  out dates, observation logs, and validation status that support no
+  decision; Git records them.
 - Before drafting, identify the reader's need and choose one primary document
   for each topic. Match the detail to that document's role; summarize and link
   elsewhere. Draft from the final outcome, not the conversation or work log.
@@ -155,8 +164,10 @@ Conventions:
   and duplication. Remove detail that does not help the reader understand,
   use, or maintain the project, including obsolete plans and incidental trial
   history. Preserve active requirements, open decisions, operational caveats,
-  and evidence needed to reproduce or assess a result. Git preserves history;
-  delete removed text instead of moving it to an appendix or archive.
+  and evidence needed to reproduce or assess a result. Delete removed text
+  instead of moving it to an appendix or archive. Reread the changed text as a
+  new reader: check that each term is introduced, each sentence follows
+  logically, and parallel items match.
 - Wrap prose at about 80 columns. Tables, code, and long URLs are exempt.
 
 ## Docstrings and comments

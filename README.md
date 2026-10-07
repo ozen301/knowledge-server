@@ -1,24 +1,25 @@
 # Knowledge Server
 
-Let AI agents search your Markdown notes, read the lines that matter, and
-cite where they found them.
+An [MCP](https://modelcontextprotocol.io/) server that lets AI agents search
+a personal collection of Markdown notes, read the lines that matter, and cite
+where they found them.
 
-Knowledge Server is an [MCP](https://modelcontextprotocol.io/) server for a
-personal knowledge base: a folder of Markdown notes that you keep in Git. It
-works with local agents such as Claude Code and Codex CLI, and with web
-clients such as ChatGPT and Claude.ai. Agents read the notes but cannot edit
-them. Web clients can also propose new notes and edits, which take effect
-only when you review and merge them. A script applies the proposals to a
-separate clone of your notes, where you review them in your editor's Git
-view.
+The notes are a folder of Markdown files kept in Git, called the "vault" as in
+[Obsidian](https://obsidian.md/). Knowledge Server works with local agents such
+as Claude Code and Codex CLI, and with web clients such as ChatGPT and
+Claude.ai. Agents can read the notes, and web clients can also propose new
+notes and edits (local agents can already edit files with their own tools). A
+proposal takes effect only after the vault owner reviews and merges it.
 
 ## Quick start
 
-You need [uv](https://docs.astral.sh/uv/), ripgrep (`rg`) on `PATH`, a clone
-of this repository, and a local checkout of your notes. Replace the example
-paths with absolute paths.
+### Local agents
 
-1. Register the server with your MCP host. The host starts it when needed.
+The server needs [uv](https://docs.astral.sh/uv/), ripgrep (`rg`) on `PATH`,
+a clone of this repository, and a local checkout of the notes. Replace the
+example paths with absolute paths.
+
+1. Register the server with the MCP host. The host starts it when needed.
 
    Claude Code:
 
@@ -36,78 +37,87 @@ paths with absolute paths.
      -- uv run --project /path/to/knowledge-server --locked knowledge-server
    ```
 
-2. Ask the agent a question about your notes, and ask it to cite its source.
+2. Ask the agent a question about the notes, and ask it to cite its source.
    It searches, reads the relevant lines, and cites the note path and line.
 
 The host sends the note excerpts it receives to its model provider. The
 [guide for local MCP hosts](docs/use-with-local-hosts.md) covers registration
-details, troubleshooting, and how the tools behave. To use the notes from
-ChatGPT or Claude.ai, follow the [guide for web
-clients](docs/use-with-web-clients.md); it sets up the HTTP service on a
-small Linux VM behind Cloudflare.
+details, troubleshooting, and how the tools behave.
+
+### Web clients
+
+ChatGPT and Claude.ai reach the server over HTTPS, so it runs as a service.
+The [guide for web clients](docs/use-with-web-clients.md) sets it up on a
+small Linux VM behind Cloudflare Tunnel and Cloudflare Access, connects both
+clients, and enables write proposals and their review. Cloudflare and the
+client's provider, OpenAI or Anthropic, handle the note excerpts that the
+client receives.
 
 ## Documentation
 
-Guides:
+### Guides
 
-- [Use with local MCP hosts](docs/use-with-local-hosts.md): registration
-  over stdio, troubleshooting, and how the tools behave and their limits.
-- [Use with web clients](docs/use-with-web-clients.md): setting up the remote
-  route for ChatGPT and Claude.ai in the VM, write proposals and their
-  review, daily operation, updates, the emergency stop, and troubleshooting.
+- [Use with local MCP hosts](docs/use-with-local-hosts.md): connecting Claude
+  Code or Codex CLI so that they can search and read the notes. It also
+  describes how the tools behave for every client.
+- [Use with web clients](docs/use-with-web-clients.md): connecting ChatGPT and
+  Claude.ai through a server running in a VM, so that they can search, read,
+  and propose changes to the notes.
 
-Specifications:
+### Design
 
-- [Tool contract](docs/tool-contract.md): exact tool behavior, limits, and
-  errors.
-- [HTTP contract](docs/http-contract.md): the HTTP entry point's
-  configuration, request checks, assertion rules, and logging.
-
-Design and planning:
-
-- [Architecture overview](docs/architecture.md): what the components do and
-  how they work together.
+- [Architecture overview](docs/architecture.md): the components, what each
+  one does, and how they work together.
 - [Design decisions](docs/design-decisions.md): why the server works as it
-  does, the remote route, and its trust boundary.
-- [Roadmap](docs/roadmap.md): possible next steps and how to start a task.
+  does, and the risks it accepts.
+
+### Specifications
+
+- [Tool contract](docs/tool-contract.md): the exact behavior, limits, and
+  errors of each tool.
+- [HTTP contract](docs/http-contract.md): the HTTP entry point's
+  configuration, the checks it applies to each request, and its logging.
+
+### Project maintenance
+
+- [Repository guide](AGENTS.md): the development workflow and writing
+  conventions that coding agents follow.
+- [Glossary](GLOSSARY.md): the project's terms, such as "knowledge vault",
+  "local vault checkout", and "vault owner" .
+- [Roadmap](docs/roadmap.md): possible next steps, and how to plan and finish
+  a task.
 - [Sample notes and retrieval questions](docs/sample-notes.md): the invented
-  test notes, the fixed questions about them, and the known retrieval
-  weaknesses.
-
-Project conventions:
-
-- [Glossary](GLOSSARY.md): the terms for the vault, its local checkout, and
-  project roles.
-- [Repository guide](AGENTS.md): development workflow and writing
-  conventions.
+  notes that the tests use, fixed questions that check retrieval quality, and
+  the known weaknesses of search.
 
 ## Development
 
-You need Python 3.14 or later, uv, and ripgrep; the search tests run `rg` and
-fail without it. From the repository root, run:
+Development needs Python 3.14 or later, uv, and ripgrep; the search tests
+run `rg` and fail without it. The tests use the invented notes in
+`tests/fixtures/vault/` and need no real vault, accounts, or network access.
+
+Run all checks from the repository root:
 
 ```sh
 scripts/check
 ```
 
-It installs the locked dependencies, runs the formatting, lint, type, and
-test checks, checks for whitespace errors, and summarizes the results. You
-can also run its main commands one at a time:
+The script installs the locked dependencies, runs the formatting, lint, type,
+and test checks, checks for whitespace errors, and prints a summary. To run a
+single check, use its command:
 
 ```sh
-uv sync --locked --dev
 uv run ruff format --check .
 uv run ruff check .
 uv run pyright
 uv run pytest
 ```
 
-GitHub Actions runs `scripts/check --ci` automatically only on pushes to
-`main`, so run the script locally before merging into `main`. CI installs
-ripgrep from the Ubuntu packages, so it can test a different ripgrep version
-than your machine.
+GitHub Actions runs `scripts/check --ci` on every push to `main`, and on
+other branches only on request, so run the script locally before merging into
+`main`.
 
 ## Status
 
-Knowledge Server is a personal project, built for one vault owner and in
-regular use. The [roadmap](docs/roadmap.md) lists possible next steps.
+Knowledge Server is a personal project in regular use. The
+[roadmap](docs/roadmap.md) lists possible next steps.

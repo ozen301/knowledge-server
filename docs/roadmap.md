@@ -1,10 +1,9 @@
 # Roadmap
 
-Status: the first version is complete as of 2026-10-05, and reviewed write
-proposals with their review script as of 2026-10-07; no task is in progress.
-This document lists optional later work, the constraints on it, and how to
-define and finish a task. The [design decisions](design-decisions.md) record
-the decisions that later work must preserve.
+Status: no task is in progress. This document lists optional later work,
+the constraints on it, and how to define and finish a task. The [design
+decisions](design-decisions.md) record the decisions that later work must
+preserve.
 
 ## How to add work
 
@@ -17,10 +16,9 @@ or backend abstractions in advance.
    the specification changes, and the acceptance checks.
 2. Implement and review one task at a time, as one reviewable diff, with the
    workflow in [AGENTS.md](../AGENTS.md).
-3. When the task is complete, remove its entry. Update the README features, the
-   specifications, the guides, and the architecture overview as the change
-   requires, and record limitations that the validation leaves open in the
-   [design decisions](design-decisions.md). Git keeps the history.
+3. When the task is complete, remove its entry, and update the documents
+   that the change makes inaccurate, as the workflow in
+   [AGENTS.md](../AGENTS.md) requires. Git keeps the history.
 
 Revise the design decisions when evidence changes a decision.
 
