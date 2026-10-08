@@ -46,7 +46,7 @@ def _write(root: Path, relative: str, data: bytes | str) -> Path:
 
 def _search(
     root: Path,
-    query: str,
+    query: str | list[str],
     path: str = "",
     *,
     max_results: int = DEFAULT_LIMITS.default_search_results,
@@ -55,7 +55,7 @@ def _search(
     ripgrep: str = RG,
 ) -> SearchResult:
     request = SearchRequest(
-        query=query,
+        queries=[query] if isinstance(query, str) else query,
         path=path,
         max_results=max_results,
         case_sensitive=case_sensitive,
@@ -64,7 +64,7 @@ def _search(
 
 
 def _search_error(
-    root: Path, query: str, path: str = "", **kwargs: Any
+    root: Path, query: str | list[str], path: str = "", **kwargs: Any
 ) -> KnowledgeError:
     with pytest.raises(KnowledgeError) as error:
         _search(root, query, path, **kwargs)
@@ -156,6 +156,32 @@ def test_literal_matches(notes: Path, query: str, hits: list[tuple[str, int]]) -
 def test_query_is_not_split_into_words(notes: Path) -> None:
     """A phrase matches only where its words appear together."""
     assert _hits(_search(notes, "Ryzen ECC")) == []
+
+
+def test_queries_are_alternatives(notes: Path) -> None:
+    """A line that contains any of the queries matches, in path and line order."""
+    result = _search(notes, ["ネットワーク", "absent phrase", "ECC memory"])
+    assert _hits(result) == [("Hardware/NAS.md", 2), ("日本語/メモ.md", 1)]
+    assert not result.truncated
+
+
+def test_line_matching_several_queries_gives_one_hit(tmp_path: Path) -> None:
+    """Each line appears once, windowed on the first match of any query."""
+    _write(tmp_path, "note.md", "xxxx dog yyyy cat zzzz\nabab\ncat\n")
+    limits = Limits(max_snippet_length=9)
+    result = _search(tmp_path, ["cat", "dog", "aba", "bab", "cat"], limits=limits)
+    assert [(m.line, m.snippet) for m in result.matches] == [
+        (1, "xx dog yy"),
+        (2, "abab"),
+        (3, "cat"),
+    ]
+
+
+def test_queries_share_the_result_limit(notes: Path) -> None:
+    """A query with many hits in early paths can leave no room for the others."""
+    result = _search(notes, ["ネットワーク", "ECC"], max_results=2)
+    assert _hits(result) == [("Hardware/NAS.md", 2), ("Hardware/NAS.md", 3)]
+    assert result.truncated
 
 
 def test_repeated_matches_on_one_line_give_one_hit(tmp_path: Path) -> None:
@@ -281,14 +307,16 @@ def test_early_stop_while_input_is_still_being_sent(tmp_path: Path) -> None:
 
 
 def test_injected_limits_reject_larger_requests(tmp_path: Path) -> None:
-    """Requests beyond injected result or query limits are invalid."""
+    """Requests beyond injected result, query-count, or query limits are invalid."""
     _write(tmp_path, "note.md", "abc\n")
-    limits = Limits(max_search_results=2, max_query_length=3)
+    limits = Limits(max_search_results=2, max_search_queries=2, max_query_length=3)
     error = _search_error(tmp_path, "abc", max_results=3, limits=limits)
     assert error.code is DomainErrorCode.INVALID_ARGUMENT
-    error = _search_error(tmp_path, "abcd", limits=limits)
+    error = _search_error(tmp_path, ["abc", "abcd"], limits=limits)
     assert error.code is DomainErrorCode.INVALID_ARGUMENT
-    assert _hits(_search(tmp_path, "abc", max_results=2, limits=limits)) == [
+    error = _search_error(tmp_path, ["a", "b", "c"], limits=limits)
+    assert error.code is DomainErrorCode.INVALID_ARGUMENT
+    assert _hits(_search(tmp_path, ["abc", "x"], max_results=2, limits=limits)) == [
         ("note.md", 1)
     ]
 
@@ -755,11 +783,11 @@ def test_deadline_covers_loading(
 def test_process_arguments_and_environment(
     notes: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The query reaches ripgrep as one `-e` value, without a shell."""
+    """Each query reaches ripgrep as its own `-e` value, without a shell."""
     recorder = _ProcessRecorder(monkeypatch)
     monkeypatch.setenv("RIPGREP_CONFIG_PATH", "/nonexistent/config")
     query = "-e --files $(touch x) ; *"
-    _search(notes, query)
+    _search(notes, [query, "--json"])
     _search(notes, "ECC", case_sensitive=True)
     (insensitive_args, kwargs), (sensitive_args, _) = recorder.calls
     for args in (insensitive_args, sensitive_args):
@@ -773,7 +801,8 @@ def test_process_arguments_and_environment(
     assert "--case-sensitive" not in insensitive_args
     assert "--case-sensitive" in sensitive_args
     assert "--ignore-case" not in sensitive_args
-    assert insensitive_args[insensitive_args.index("-e") + 1] == query
+    first = insensitive_args.index("-e")
+    assert insensitive_args[first : first + 4] == ("-e", query, "-e", "--json")
     assert insensitive_args.count(query) == 1
     assert insensitive_args[insensitive_args.index("--max-count") + 1] == "21"
     assert str(notes) not in " ".join(insensitive_args)
@@ -918,7 +947,9 @@ def test_cancellation_kills_and_reaps(
 
     async def run_and_cancel() -> None:
         task = asyncio.create_task(
-            search_notes(PathPolicy(root), SearchRequest(query="hit"), ripgrep=ripgrep)
+            search_notes(
+                PathPolicy(root), SearchRequest(queries=["hit"]), ripgrep=ripgrep
+            )
         )
         while not recorder.processes:
             await asyncio.sleep(0.01)
@@ -943,7 +974,9 @@ def test_second_cancellation_during_cleanup_still_reaps(
 
     async def run_and_cancel_twice() -> None:
         task = asyncio.create_task(
-            search_notes(PathPolicy(root), SearchRequest(query="hit"), ripgrep=ripgrep)
+            search_notes(
+                PathPolicy(root), SearchRequest(queries=["hit"]), ripgrep=ripgrep
+            )
         )
         while not recorder.processes:
             await asyncio.sleep(0.01)
@@ -988,7 +1021,9 @@ def test_cancellation_during_loading(
 
     async def run_and_cancel() -> None:
         task = asyncio.create_task(
-            search_notes(PathPolicy(tmp_path), SearchRequest(query="hit"), ripgrep=RG)
+            search_notes(
+                PathPolicy(tmp_path), SearchRequest(queries=["hit"]), ripgrep=RG
+            )
         )
         while not loaded:
             await asyncio.sleep(0.01)

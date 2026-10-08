@@ -120,12 +120,13 @@ If the command works by hand but not in the host:
   (any letter case) in non-hidden directories. They exclude hidden names that
   start with `.`, such as `.git` and `.obsidian`, symlinks, special files, and
   other file types. Git ignore rules do not hide a note.
-- **Literal search.** `knowledge_search` finds lines that contain the query
-  text exactly, ignoring letter case unless the caller asks otherwise. It does
-  not split words, rank results, or find synonyms, so an agent may need
-  several queries with different wording. Visually identical Unicode text in
-  different forms, such as a precomposed and a combining accent, does not
-  match. Full-width and half-width forms, such as `＋` and `+`, do not match
+- **Literal search.** `knowledge_search` finds lines that contain a query text
+  exactly, ignoring letter case unless the caller asks otherwise. It does not
+  split words, rank results, or find synonyms, so an agent tries several
+  wordings. One call accepts up to five queries and returns the lines that
+  contain any of them, with one result limit for all. Visually identical Unicode
+  text in different forms, such as a precomposed and a combining accent, does
+  not match. Full-width and half-width forms, such as `＋` and `+`, do not match
   each other either.
 - **Numbered lines.** `knowledge_read` returns each line as its line number,
   a tab, and the text, such as `7\t- **CPU:** AMD Ryzen 5 2600X`. Agents cite

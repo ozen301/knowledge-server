@@ -77,7 +77,8 @@ boundaries without large or slow fixtures.
 | Setting | Initial value |
 |---|---|
 | Maximum readable/searchable file size | 1 MiB |
-| Maximum query length | 512 Unicode code points |
+| Maximum queries per search | 5 |
+| Maximum query length | 512 Unicode code points, for each query |
 | Search results: default / maximum | 20 / 50 |
 | Maximum snippet length | 300 Unicode code points |
 | Read range: default / maximum | 200 / 200 lines |
@@ -129,7 +130,7 @@ output](https://py.sdk.modelcontextprotocol.io/servers/structured-output/).
 
 ```text
 knowledge_search(
-    query: str,
+    queries: list[str],
     path: str = "",
     max_results: int = 20,
     case_sensitive: bool = false,
@@ -139,22 +140,28 @@ knowledge_search(
 
 - `path` may name an eligible file or visible directory; directory search is
   recursive.
-- Query is a literal substring within one line. Preserve spaces; reject
+- `queries` holds 1 to the query-count maximum queries. A line matches when
+  it contains at least one of them (OR), so one call can try alternative
+  wordings. Duplicate queries are allowed and have no effect.
+- Each query is a literal substring within one line. Preserve spaces; reject
   whitespace-only queries, newlines, NULs, and queries exceeding the
   query-length limit. No regex, query language, stemming, or implicit word
   splitting.
 - Case behavior follows ripgrep's Unicode-aware case-insensitive matching
   unless `case_sensitive=true`; include non-ASCII cases in fixtures. No Unicode
   normalization is performed.
-- One hit per matching line, even with multiple occurrences on that line. Sort
+- One hit per matching line, even with multiple occurrences on that line or
+  matches of several queries. A hit does not say which query matched. Sort
   paths case-sensitively by Unicode code-point order, then by line number. No
   relevance score.
-- `max_results` must be at least 1 and at most the search-result maximum. Fetch
-  one additional hit to determine result-limit truncation.
-- Snippet: a window of the matching line around the first match on that
-  line, as [defined below](#snippet-window). Paths and line numbers allow a
-  full read.
-- Search does not paginate: narrow the path or query when truncated.
+- `max_results` must be at least 1 and at most the search-result maximum. It
+  limits the hits of all queries together, so a query with many hits in
+  early paths can leave no room for the others. Fetch one additional hit to
+  determine result-limit truncation.
+- Snippet: a window of the matching line around the first match of any query
+  on that line, as [defined below](#snippet-window). Paths and line numbers
+  allow a full read.
+- Search does not paginate: narrow the path or the queries when truncated.
 - Missing/disallowed explicit targets are errors. During recursive search,
   unreadable, invalid-encoding, oversized, or concurrently removed files are
   skipped and counted by reason, without exposing hidden filenames.
@@ -191,14 +198,14 @@ Do not claim an exact total hit count.
 The snippet is an exact substring of the matching line, with no ellipsis or
 other marker added. The line is the reader's version of it: without a leading
 BOM or the line ending, and without whitespace trimming. The first match is
-the first occurrence ripgrep reports on the line. Its start and end are code
-point positions derived from ripgrep's reported byte offsets, not from the
-query length, because a case-insensitive match can differ in length from the
-query. With `L` as the snippet-length limit, a line of at most `L` code
-points is the whole snippet. For a longer line, the snippet is exactly `L`
-code points; a match that fits is centered, with an odd extra code point after
-it, and the window slides to stay inside the line. With `start` and `length`
-measured in code points:
+the first occurrence of any query that ripgrep reports on the line. Its start
+and end are code point positions derived from ripgrep's reported byte
+offsets, not from the query length, because a case-insensitive match can
+differ in length from the query. With `L` as the snippet-length limit, a
+line of at most `L` code points is the whole snippet. For a longer line, the
+snippet is exactly `L` code points; a match that fits is centered, with an
+odd extra code point after it, and the window slides to stay inside the line.
+With `start` and `length` measured in code points:
 
 ```text
 if length <= L: start = clamp(match_start - (L - length) // 2, 0, len(line) - L)
@@ -236,9 +243,9 @@ result is known to be truncated. ripgrep requirements:
 
 - Fixed-string JSON output, `--encoding none` so that byte offsets refer to
   the bytes sent, and an explicit case option.
-- An argument-list call (`shell=False`) with the query passed as the value of
-  `-e`, explicit options, and a minimal environment, so user configuration
-  cannot change behavior.
+- An argument-list call (`shell=False`) with each query passed as the value
+  of its own `-e`, explicit options, and a minimal environment, so user
+  configuration cannot change behavior.
 - Each reported line must equal the sent line at the reported position;
   otherwise the result is `SEARCH_FAILED`.
 - Standard input is written while standard output and error are read,
@@ -524,10 +531,10 @@ search/read if a note changes.
 ## Required behavioral examples
 
 Fixtures must exercise ordinary notes, empty files, CRLF/BOM, Unicode content
-and filenames, spaces/leading dashes in names, duplicate line matches, ignored
-Markdown, hidden files, traversal, symlinks inside/outside the root,
-root-prefix collisions, wrong types, invalid UTF-8/NULs, oversized files/lines,
-output truncation, and missing files.
+and filenames, spaces/leading dashes in names, duplicate line matches, lines
+that match several queries, ignored Markdown, hidden files, traversal,
+symlinks inside/outside the root, root-prefix collisions, wrong types, invalid
+UTF-8/NULs, oversized files/lines, output truncation, and missing files.
 
 Tests use a temporary synthetic vault and an outside sentinel file, and check
 that no tool reveals hidden or symlinked content. Cover subprocess arguments,

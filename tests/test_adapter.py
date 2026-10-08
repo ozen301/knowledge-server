@@ -57,6 +57,7 @@ MAX_RESULTS = DEFAULT_LIMITS.max_search_results
 MAX_PAGE = DEFAULT_LIMITS.max_directory_page
 MAX_LINES = DEFAULT_LIMITS.max_read_lines
 MAX_QUERY = DEFAULT_LIMITS.max_query_length
+MAX_QUERIES = DEFAULT_LIMITS.max_search_queries
 INTERNAL_ERROR = {
     "code": "INTERNAL_ERROR",
     "message": KnowledgeError(DomainErrorCode.INTERNAL_ERROR).message,
@@ -167,13 +168,13 @@ def test_server_lists_four_tools_with_contract_schemas(vault: Path) -> None:
         return set(schema["properties"])
 
     assert properties(tools["knowledge_search"].input_schema) == {
-        "query",
+        "queries",
         "path",
         "max_results",
         "case_sensitive",
         "mode",
     }
-    assert tools["knowledge_search"].input_schema["required"] == ["query"]
+    assert tools["knowledge_search"].input_schema["required"] == ["queries"]
     assert properties(tools["knowledge_read"].input_schema) == {
         "path",
         "start_line",
@@ -317,7 +318,7 @@ def test_write_tools_save_proposals_that_the_read_tools_serve(vault: Path) -> No
                         "edits": [{"old": "ECC memory", "new": "ECC proposal"}],
                     },
                 ),
-                ("knowledge_search", {"query": "ECC proposal"}),
+                ("knowledge_search", {"queries": ["ECC proposal"]}),
                 ("knowledge_read", {"path": "inbox/notes/alpha.md"}),
                 ("knowledge_list", {"path": "inbox"}),
                 ("knowledge_info", {"path": "inbox/plans/plan.md"}),
@@ -389,7 +390,7 @@ def test_successful_calls_return_core_results_as_structured_content_and_json(
         _call_in_process(
             vault,
             [
-                ("knowledge_search", {"query": "ECC"}),
+                ("knowledge_search", {"queries": ["ECC"]}),
                 ("knowledge_read", {"path": "notes/alpha.md", "end_line": 2}),
                 ("knowledge_list", {"path": "notes"}),
                 ("knowledge_info", {"path": "notes/alpha.md"}),
@@ -418,7 +419,7 @@ def test_empty_results_are_successes_not_errors(vault: Path) -> None:
         _call_in_process(
             vault,
             [
-                ("knowledge_search", {"query": "no such text"}),
+                ("knowledge_search", {"queries": ["no such text"]}),
                 ("knowledge_list", {"path": "empty"}),
                 ("knowledge_read", {"path": "notes/beta.md", "start_line": 5}),
             ],
@@ -439,8 +440,9 @@ READ_RANGE = (
     f"{MAX_LINES} lines."
 )
 SINGLE_LINE = (
-    "query must contain non-space text on a single line, without NUL characters."
+    "Each query must contain non-space text on a single line, without NUL characters."
 )
+QUERIES = f"queries must be a list of 1 to {MAX_QUERIES} strings of 1 to {MAX_QUERY} characters."
 RESULTS_RANGE = f"max_results must be an integer from 1 to {MAX_RESULTS}."
 PAGE_RANGE = f"limit must be an integer from 1 to {MAX_PAGE}."
 
@@ -478,30 +480,41 @@ PAGE_RANGE = f"limit must be an integer from 1 to {MAX_PAGE}."
         (
             "knowledge_search",
             {},
-            f"query is required and must be a string of 1 to {MAX_QUERY} characters.",
-        ),
-        ("knowledge_search", {"query": "   "}, SINGLE_LINE),
-        ("knowledge_search", {"query": "two\nlines"}, SINGLE_LINE),
-        ("knowledge_search", {"query": "one\x00two"}, SINGLE_LINE),
-        (
-            "knowledge_search",
-            {"query": QUERY_TEXT * 40},
-            f"query must be a string of 1 to {MAX_QUERY} characters.",
+            QUERIES.replace("queries", "queries is required and", 1),
         ),
         (
             "knowledge_search",
-            {"query": "ECC", "max_results": MAX_RESULTS + 1},
+            {"query": "ECC"},
+            QUERIES.replace("queries", "queries is required and", 1)
+            + " Unknown argument. Valid arguments: queries, path, max_results, "
+            "case_sensitive, mode.",
+        ),
+        ("knowledge_search", {"queries": "ECC"}, QUERIES),
+        ("knowledge_search", {"queries": []}, QUERIES),
+        ("knowledge_search", {"queries": ["ECC"] * (MAX_QUERIES + 1)}, QUERIES),
+        ("knowledge_search", {"queries": ["ECC", 5]}, QUERIES),
+        ("knowledge_search", {"queries": ["   "]}, SINGLE_LINE),
+        ("knowledge_search", {"queries": ["two\nlines"]}, SINGLE_LINE),
+        ("knowledge_search", {"queries": ["ECC", "one\x00two"]}, SINGLE_LINE),
+        (
+            "knowledge_search",
+            {"queries": ["ECC", QUERY_TEXT * 40]},
+            QUERIES,
+        ),
+        (
+            "knowledge_search",
+            {"queries": ["ECC"], "max_results": MAX_RESULTS + 1},
             RESULTS_RANGE,
         ),
-        ("knowledge_search", {"query": "ECC", "max_results": "[1]"}, RESULTS_RANGE),
+        ("knowledge_search", {"queries": ["ECC"], "max_results": "[1]"}, RESULTS_RANGE),
         (
             "knowledge_search",
-            {"query": "ECC", "case_sensitive": "true"},
+            {"queries": ["ECC"], "case_sensitive": "true"},
             "case_sensitive must be true or false.",
         ),
         (
             "knowledge_search",
-            {"query": "ECC", "mode": "regex"},
+            {"queries": ["ECC"], "mode": "regex"},
             'mode must be "literal".',
         ),
         ("knowledge_list", {"offset": -1}, "offset must be an integer of at least 0."),
@@ -531,7 +544,8 @@ def test_argument_descriptions_state_the_limits(vault: Path) -> None:
     properties = _run(schemas())
     search = properties["knowledge_search"]
     assert f"from 1 to {MAX_RESULTS}" in search["max_results"]["description"]
-    assert f"at most {MAX_QUERY} characters" in search["query"]["description"]
+    assert f"1 to {MAX_QUERIES} literal texts" in search["queries"]["description"]
+    assert f"at most {MAX_QUERY} characters" in search["queries"]["description"]
     assert (
         f"at most {MAX_LINES} lines"
         in properties["knowledge_read"]["end_line"]["description"]
@@ -553,8 +567,8 @@ def test_argument_descriptions_state_the_limits(vault: Path) -> None:
         ("knowledge_info", {"path": "link.md"}, "ACCESS_DENIED"),
         ("knowledge_list", {"path": "notes/alpha.md"}, "NOT_A_DIRECTORY"),
         ("knowledge_list", {"path": ".hidden"}, "ACCESS_DENIED"),
-        ("knowledge_search", {"query": SECRET, "path": ".hidden"}, "ACCESS_DENIED"),
-        ("knowledge_search", {"query": "ECC", "path": "missing"}, "NOT_FOUND"),
+        ("knowledge_search", {"queries": [SECRET], "path": ".hidden"}, "ACCESS_DENIED"),
+        ("knowledge_search", {"queries": ["ECC"], "path": "missing"}, "NOT_FOUND"),
     ],
 )
 def test_domain_errors_return_code_and_safe_message(
@@ -572,7 +586,9 @@ def test_domain_errors_return_code_and_safe_message(
 
 def test_search_does_not_reveal_hidden_or_symlinked_notes(vault: Path) -> None:
     """A whole-vault search skips content outside the visibility policy."""
-    (result,) = _run(_call_in_process(vault, [("knowledge_search", {"query": SECRET})]))
+    (result,) = _run(
+        _call_in_process(vault, [("knowledge_search", {"queries": [SECRET]})])
+    )
     content = _success(result)
     assert content["matches"] == []
     assert content["incomplete"] is False
@@ -614,7 +630,7 @@ def _fail_once_async[**P, R](
 @pytest.mark.parametrize(
     ("tool", "function_name", "arguments"),
     [
-        ("knowledge_search", "search_notes", {"query": f"ECC {QUERY_TEXT}"}),
+        ("knowledge_search", "search_notes", {"queries": [f"ECC {QUERY_TEXT}"]}),
         ("knowledge_read", "read_note", {"path": "notes/alpha.md"}),
         ("knowledge_list", "list_directory", {"path": "notes"}),
         ("knowledge_info", "note_info", {"path": "notes/alpha.md"}),
@@ -761,7 +777,7 @@ def test_stdio_session_serves_four_tools_and_exits_cleanly(
             tools = await client.list_tools()
             assert {tool.name for tool in tools.tools} == TOOL_NAMES
 
-            search = await client.call_tool("knowledge_search", {"query": "ECC"})
+            search = await client.call_tool("knowledge_search", {"queries": ["ECC"]})
             assert _success(search)["matches"][0]["path"] == "notes/alpha.md"
             read = await client.call_tool("knowledge_read", {"path": "notes/alpha.md"})
             assert _success(read)["total_lines"] == 3
@@ -851,7 +867,7 @@ def test_stdio_cancelled_search_kills_ripgrep(vault: Path, tmp_path: Path) -> No
     async def exercise() -> None:
         async with Client(launch.parameters) as client:
             call = asyncio.create_task(
-                client.call_tool("knowledge_search", {"query": "ECC"})
+                client.call_tool("knowledge_search", {"queries": ["ECC"]})
             )
             while not pid_file.exists() or not pid_file.read_text().strip():
                 assert not call.done()

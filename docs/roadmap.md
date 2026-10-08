@@ -31,7 +31,7 @@ None.
 | Idea | Trigger and constraint |
 |---|---|
 | [NFC-equivalent matching](#nfc-equivalent-matching) | The first evidence-backed retrieval improvement |
-| Multi-keyword queries, a rebuildable index such as SQLite FTS5, or ranking | Real questions fail because one literal phrase cannot combine separate words, or latency or search budgets block use; stale and missing sources must be handled |
+| Queries that require all of several words (AND), a rebuildable index such as SQLite FTS5, or ranking | Real questions fail because one literal phrase cannot combine separate words, or latency or search budgets block use; stale and missing sources must be handled |
 | Additional formats, likely text-based PDF first | Needed sources exist outside Markdown; hits must remain traceable to the original file and page or section |
 | Semantic retrieval with multilingual embeddings | The saved evaluation shows misses that lexical search cannot fix; exact search and CPU-only operation must remain useful |
 | Additional collections | A second explicitly configured root is needed; source identity and filtering must stay consistent across tools and caches |

@@ -18,6 +18,7 @@ class Limits:
     Attributes:
         max_file_bytes: Largest file, in raw bytes, that read and search load.
             Larger files can still be listed and inspected with info.
+        max_search_queries: Most queries in one search request.
         max_query_length: Longest search query, in code points.
         default_search_results: Number of search hits returned when the caller
             does not set `max_results`.
@@ -49,6 +50,7 @@ class Limits:
     """
 
     max_file_bytes: int = 1 * 1024 * 1024
+    max_search_queries: int = 5
     max_query_length: int = 512
     default_search_results: int = 20
     max_search_results: int = 50

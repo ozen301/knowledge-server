@@ -94,7 +94,7 @@ async def search_notes(
     *,
     ripgrep: str,
 ) -> SearchResult:
-    """Find the lines of visible notes that contain a literal query.
+    """Find the lines of visible notes that contain any of the literal queries.
 
     A directory target is searched recursively. Notes that cannot be searched
     are skipped and counted; for an explicit file target, the same conditions
@@ -102,7 +102,7 @@ async def search_notes(
 
     Args:
         policy: The policy for the vault root.
-        request: The query, target path, result limit, and case option.
+        request: The queries, target path, result limit, and case option.
         limits: Limits for the request, the search budgets, and snippets.
         ripgrep: Path of the ripgrep executable.
 
@@ -110,15 +110,17 @@ async def search_notes(
         Up to `request.max_results` hits ordered by path and line number.
 
     Raises:
-        KnowledgeError: `INVALID_ARGUMENT` if the query or result limit
-            exceeds `limits`; `SEARCH_LIMIT_EXCEEDED` if a search budget or
-            the deadline is exceeded; `SEARCH_FAILED` if ripgrep fails or
-            reports output that does not agree with its input; for an explicit
-            file target, `FILE_TOO_LARGE` or `INVALID_ENCODING`; or any code
-            from the path checks and loading of the target.
+        KnowledgeError: `INVALID_ARGUMENT` if the number of queries, a
+            query, or the result limit exceeds `limits`;
+            `SEARCH_LIMIT_EXCEEDED` if a search budget or the deadline is
+            exceeded; `SEARCH_FAILED` if ripgrep fails or reports output
+            that does not agree with its input; for an explicit file target,
+            `FILE_TOO_LARGE` or `INVALID_ENCODING`; or any code from the path
+            checks and loading of the target.
     """
     if (
-        len(request.query) > limits.max_query_length
+        len(request.queries) > limits.max_search_queries
+        or any(len(query) > limits.max_query_length for query in request.queries)
         or request.max_results > limits.max_search_results
     ):
         raise KnowledgeError(DomainErrorCode.INVALID_ARGUMENT)
@@ -307,8 +309,7 @@ async def _run_ripgrep(
         "--case-sensitive" if request.case_sensitive else "--ignore-case",
         "--max-count",
         str(request.max_results + 1),
-        "-e",
-        request.query,
+        *(arg for query in request.queries for arg in ("-e", query)),
         "-",
     ]
     try:

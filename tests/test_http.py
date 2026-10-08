@@ -656,7 +656,7 @@ def test_http_stdio_schemas_and_results(
         return {"keys": [_jwk(signing_keys[0])]}
 
     calls = [
-        ("knowledge_search", {"query": SENTINEL}),
+        ("knowledge_search", {"queries": [SENTINEL]}),
         ("knowledge_read", {"path": "note.md"}),
         ("knowledge_list", {}),
         ("knowledge_info", {"path": "note.md"}),

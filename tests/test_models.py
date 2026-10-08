@@ -21,13 +21,13 @@ from knowledge_server.core.models import (
 def test_search_result_limit_is_a_strict_bounded_integer(value: object) -> None:
     """Search limits reject coercion and values outside the contract bounds."""
     with pytest.raises(ValidationError):
-        SearchRequest(query="needle", max_results=value)  # type: ignore[arg-type]
+        SearchRequest(queries=["needle"], max_results=value)  # type: ignore[arg-type]
 
 
 def test_requests_apply_contract_defaults() -> None:
     """Future tool wrappers can use the shared request defaults unchanged."""
-    assert SearchRequest(query="needle").model_dump() == {
-        "query": "needle",
+    assert SearchRequest(queries=["needle"]).model_dump() == {
+        "queries": ["needle"],
         "path": "",
         "max_results": 20,
         "case_sensitive": False,
@@ -43,15 +43,23 @@ def test_requests_apply_contract_defaults() -> None:
 
 def test_request_boundaries_are_accepted_without_coercion() -> None:
     """Every numeric request field accepts its exact documented boundaries."""
+    assert SearchRequest(queries=[" preserved spaces "], max_results=1).queries == [
+        " preserved spaces "
+    ]
     assert (
-        SearchRequest(query=" preserved spaces ", max_results=1).query
-        == " preserved spaces "
-    )
-    assert (
-        SearchRequest(query="needle", max_results=50, case_sensitive=True).max_results
+        SearchRequest(
+            queries=["needle"], max_results=50, case_sensitive=True
+        ).max_results
         == 50
     )
-    assert SearchRequest(query="x" * 512).query == "x" * 512
+    assert SearchRequest(queries=["x" * 512]).queries == ["x" * 512]
+    assert SearchRequest(queries=["a", "b", "c", "d", "a"]).queries == [
+        "a",
+        "b",
+        "c",
+        "d",
+        "a",
+    ]
     assert ReadRequest(path="Notes/a.md", start_line=1, end_line=200).end_line == 200
     assert ListRequest(offset=0, limit=1).limit == 1
     assert ListRequest(offset=9, limit=200).offset == 9
@@ -60,7 +68,10 @@ def test_request_boundaries_are_accepted_without_coercion() -> None:
 @pytest.mark.parametrize(
     ("model", "arguments"),
     [
-        (SearchRequest, {"query": "x" * 513}),
+        (SearchRequest, {"queries": ["x" * 513]}),
+        (SearchRequest, {"queries": ["needle", "x" * 513]}),
+        (SearchRequest, {"queries": []}),
+        (SearchRequest, {"queries": ["a", "b", "c", "d", "e", "f"]}),
         (ReadRequest, {"path": "a.md", "start_line": 1, "end_line": 201}),
         (ListRequest, {"limit": 0}),
         (ListRequest, {"limit": 201}),
@@ -78,12 +89,16 @@ def test_request_limit_boundaries_reject_values_beyond_the_contract(
 @pytest.mark.parametrize(
     ("model", "arguments"),
     [
-        (SearchRequest, {"query": "needle", "case_sensitive": 1}),
+        (SearchRequest, {"queries": ["needle"], "case_sensitive": 1}),
+        (SearchRequest, {"queries": "needle"}),
+        (SearchRequest, {"queries": ("needle",)}),
+        (SearchRequest, {"queries": ["needle", 1]}),
+        (SearchRequest, {"query": "needle"}),
         (ReadRequest, {"path": "a.md", "start_line": True}),
         (ReadRequest, {"path": "a.md", "end_line": "2"}),
         (ListRequest, {"offset": False}),
         (ListRequest, {"limit": "1"}),
-        (SearchRequest, {"query": "needle", "root": "/outside"}),
+        (SearchRequest, {"queries": ["needle"], "root": "/outside"}),
         (ReadRequest, {"path": "a.md", "root": "/outside"}),
         (ListRequest, {"root": "/outside"}),
         (InfoRequest, {"path": "a.md", "root": "/outside"}),
@@ -100,9 +115,9 @@ def test_requests_reject_coercion_and_root_overrides(
 
 @pytest.mark.parametrize("query", ["", " \t ", "one\ntwo", "one\x00two", "x" * 513])
 def test_search_query_must_be_a_bounded_single_literal_line(query: str) -> None:
-    """Query validation preserves meaningful spaces while rejecting unsafe forms."""
+    """Every query is checked, wherever it appears in the list."""
     with pytest.raises(ValidationError):
-        SearchRequest(query=query)
+        SearchRequest(queries=["needle", query])
 
 
 @pytest.mark.parametrize(

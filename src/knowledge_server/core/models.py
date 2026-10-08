@@ -161,7 +161,12 @@ def _accepted_values(schema: dict[str, Any]) -> str:
     elif value["type"] == "string" and "pattern" in value:
         text = f"a string matching {value['pattern']}"
     elif value["type"] == "array" and "maxItems" in value:
-        text = f"a list of {value['minItems']} to {value['maxItems']} items"
+        items = value["items"]
+        if items.get("type") == "string" and "maxLength" in items:
+            kind = f"strings of {items['minLength']} to {items['maxLength']} characters"
+        else:
+            kind = "items"
+        text = f"a list of {value['minItems']} to {value['maxItems']} {kind}"
     elif value["type"] == "string" and "maxLength" in value:
         text = f"a string of {value['minLength']} to {value['maxLength']} characters"
     elif value["type"] == "string":
@@ -220,16 +225,26 @@ def _check_write_text(texts: Iterable[str]) -> None:
 
 
 class SearchRequest(ContractModel):
-    """Arguments for literal search."""
+    """Arguments for literal search with one or more alternative queries."""
 
-    query: str = Field(
+    queries: list[
+        Annotated[
+            str,
+            Field(
+                strict=True, min_length=1, max_length=DEFAULT_LIMITS.max_query_length
+            ),
+        ]
+    ] = Field(
         strict=True,
         min_length=1,
-        max_length=DEFAULT_LIMITS.max_query_length,
+        max_length=DEFAULT_LIMITS.max_search_queries,
         description=(
-            "Literal text to find within one line, at most "
-            f"{DEFAULT_LIMITS.max_query_length} characters. Spaces are "
-            "significant; there is no regular expression or query syntax."
+            f"1 to {DEFAULT_LIMITS.max_search_queries} literal texts to find "
+            "within one line, each at most "
+            f"{DEFAULT_LIMITS.max_query_length} characters. A line matches if "
+            "it contains any of them, so one call can try alternative "
+            "wordings. Spaces are significant; there is no regular expression "
+            "or query syntax."
         ),
     )
     path: str = Field(
@@ -260,26 +275,22 @@ class SearchRequest(ContractModel):
     )
 
     @model_validator(mode="after")
-    def validate_literal_query(self) -> SearchRequest:
-        """Reject a blank or multi-line query without trimming its spaces.
+    def validate_literal_queries(self) -> SearchRequest:
+        """Reject blank or multi-line queries without trimming their spaces.
 
         Returns:
             The unchanged request.
 
         Raises:
-            ValueError: If the query is only whitespace or contains a line
-                break or NUL character.
+            ValueError: If a query is only whitespace or contains a line break
+                or NUL character.
         """
-        if (
-            not self.query.strip()
-            or "\n" in self.query
-            or "\r" in self.query
-            or "\x00" in self.query
-        ):
-            raise ValueError(
-                "query must contain non-space text on a single line, without NUL "
-                "characters."
-            )
+        for query in self.queries:
+            if not query.strip() or "\n" in query or "\r" in query or "\x00" in query:
+                raise ValueError(
+                    "Each query must contain non-space text on a single line, "
+                    "without NUL characters."
+                )
         return self
 
 

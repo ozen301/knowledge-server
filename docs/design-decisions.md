@@ -43,7 +43,12 @@ abstraction before a second backend exists.
    an authorization system.
 3. **Start with literal search.** `ECC Ryzen` means that literal phrase, not
    semantic similarity or an implicit AND query. Future search modes must not
-   silently change this behavior.
+   silently change this behavior. One call may give several queries, which
+   are alternatives (OR): agents without semantic search try several
+   wordings, and one call for all of them saves round trips and can reduce
+   context use.
+   Hits do not say which query matched, because ripgrep does not report it
+   and adding it would need more passes or a matcher of our own.
 4. **Make responses bounded and citable.** Return logical paths, line numbers,
    explicit truncation, and useful errors. Never expose server paths through
    raw exceptions. Read results number every line, because hosts cited wrong

@@ -61,13 +61,15 @@ _INBOX_NOTICE = (
     " Notes under inbox/ are unreviewed proposals, not yet part of the vault."
 )
 _SEARCH_DESCRIPTION = (
-    "Find lines in the Markdown notes of the knowledge vault that contain a "
-    "literal text. Returns one match per line with its note path, line "
-    "number, and a snippet, ordered by path and line. Matching ignores letter "
-    "case unless case_sensitive is true. There is no regular expression, "
-    "word splitting, or relevance ranking; narrow the path or query when the "
-    "result is truncated. Use knowledge_read to read the lines around a match."
-    + _INBOX_NOTICE
+    "Find lines in the Markdown notes of the knowledge vault that contain any "
+    f"of up to {DEFAULT_LIMITS.max_search_queries} literal texts. Put "
+    "alternative wordings, such as synonyms and translations, in one call. "
+    "Returns one match per line with its note path, line number, and a "
+    "snippet, ordered by path and line; max_results limits all queries "
+    "together. Matching ignores letter case unless case_sensitive is true. "
+    "There is no regular expression, word splitting, or relevance ranking; "
+    "narrow the path or queries when the result is truncated. Use "
+    "knowledge_read to read the lines around a match." + _INBOX_NOTICE
 )
 _READ_DESCRIPTION = (
     "Read a range of whole lines from one Markdown note in the knowledge "

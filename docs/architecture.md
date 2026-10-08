@@ -144,9 +144,9 @@ order.
 ### Literal search: `core/search.py`
 
 `search_notes()` implements `knowledge_search`: it finds lines that contain
-the query as a literal phrase, not split into words and not ranked. It is an
-`async` function, so that cancelling the request stops it, and it runs in two
-stages:
+any of the request's queries, each a literal phrase, not split into words and
+not ranked. It is an `async` function, so that cancelling the request stops
+it, and it runs in two stages:
 
 1. **Load.** A worker thread discovers notes with the path policy and loads
    each one with the shared loader. Notes that cannot be read are skipped and
