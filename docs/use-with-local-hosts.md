@@ -125,9 +125,9 @@ If the command works by hand but not in the host:
   split words, rank results, or find synonyms, so an agent tries several
   wordings. One call accepts up to five queries and returns the lines that
   contain any of them, with one result limit for all. Visually identical Unicode
-  text in different forms, such as a precomposed and a combining accent, does
-  not match. Full-width and half-width forms, such as `＋` and `+`, do not match
-  each other either.
+  text in different forms, such as a precomposed and a combining accent,
+  matches. Full-width and half-width forms, such as `＋` and `+`, do not match
+  each other.
 - **Numbered lines.** `knowledge_read` returns each line as its line number,
   a tab, and the text, such as `7\t- **CPU:** AMD Ryzen 5 2600X`. Agents cite
   these numbers. Search matches carry their line number in a separate field.

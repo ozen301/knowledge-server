@@ -6,10 +6,12 @@ The match stage sends the loaded text of the eligible notes, in sorted path
 order, to one ripgrep process on standard input. ripgrep never opens a vault
 file, so a file changed or replaced after loading cannot affect the matches.
 
-Each note's text is sent as the reader sees it: without a BOM, with CRLF
-normalized to LF, and with every line ending in LF. A reported line number maps
-back to a note and a line in it; a match cannot cross notes because a query
-cannot contain a newline. Because the stream is in result order, ripgrep's
+Each note's text is sent as the reader sees it, without a BOM, with CRLF
+normalized to LF, and with every line ending in LF, converted to Unicode NFC.
+The queries are converted to NFC too, so canonically equivalent text matches.
+NFC does not add or remove line breaks, so a reported line number maps back to
+a note and a line in it; a match cannot cross notes because a query cannot
+contain a newline. Because the stream is in result order, ripgrep's
 `--max-count` stops the search once one hit more than requested is found.
 
 The load stage runs in a worker thread so that it does not block the event
@@ -25,6 +27,7 @@ import json
 import os
 import threading
 import time
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -268,10 +271,10 @@ def _discover(
 
 
 def _append_note(corpus: _Corpus, relative_path: str, text: str) -> None:
-    """Add a note's text to the stream and record where it sits."""
+    """Add a note's NFC text to the stream and record where it sits."""
     if not text:
         return
-    data = text.encode()
+    data = unicodedata.normalize("NFC", text).encode()
     if not data.endswith(b"\n"):
         data += b"\n"
     first_line = (
@@ -309,7 +312,11 @@ async def _run_ripgrep(
         "--case-sensitive" if request.case_sensitive else "--ignore-case",
         "--max-count",
         str(request.max_results + 1),
-        *(arg for query in request.queries for arg in ("-e", query)),
+        *(
+            arg
+            for query in request.queries
+            for arg in ("-e", unicodedata.normalize("NFC", query))
+        ),
         "-",
     ]
     try:

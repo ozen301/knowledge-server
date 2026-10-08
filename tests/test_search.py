@@ -401,10 +401,10 @@ def test_snippet_window(
 
 def test_snippet_window_uses_matched_text_not_query(tmp_path: Path) -> None:
     """Window positions come from the reported match, in code points."""
-    # "k" (1 byte) matches the Kelvin sign (3 bytes); "ß" (2 bytes) matches
-    # "ẞ" (3 bytes).
-    line = "abcdefgh\u212aijlmnopq\n"
-    assert _snippet(tmp_path, line, "k") == ("efgh\u212aijlmn", True)
+    # "s" (1 byte) matches the long s (2 bytes); "ß" (2 bytes) matches "ẞ"
+    # (3 bytes).
+    line = "abcdefgh\u017fijlmnopq\n"
+    assert _snippet(tmp_path, line, "s") == ("efgh\u017fijlmn", True)
     assert _snippet(tmp_path, "ẞẞẞẞẞ abcdefgh\n", "ß") == ("ẞẞẞẞẞ abcd", True)
 
 
@@ -426,7 +426,7 @@ def test_snippet_with_default_limit(tmp_path: Path) -> None:
     assert truncated
 
 
-# Unicode representations (known limitation pending NFC support)
+# Unicode normalization
 
 
 @pytest.mark.parametrize(
@@ -451,19 +451,23 @@ def test_identical_representations_match(tmp_path: Path, text: str, query: str) 
         ("がみ", "か\u3099み"),
     ],
 )
-def test_different_representations_miss(
+def test_equivalent_representations_match(
     tmp_path: Path, composed: str, decomposed: str
 ) -> None:
-    """Limitation pending NFC support: equivalent forms do not match.
+    """Search compares NFC forms, so equivalent forms match each other.
 
     `é` and `e` plus a combining accent, or `が` and `か` plus a combining voiced
-    mark, look the same but are different code points.
+    mark, look the same but are different code points. NFC shortens the
+    decomposed lines before the match; the match keeps its note and line
+    number, and the snippet is the NFC form of the line.
     """
     assert unicodedata.normalize("NFC", decomposed) == composed
-    _write(tmp_path, "note.md", composed + "\n")
-    assert _search(tmp_path, decomposed).matches == []
-    _write(tmp_path, "note.md", decomposed + "\n")
-    assert _search(tmp_path, composed).matches == []
+    for text, query in ((decomposed, composed), (composed, decomposed)):
+        _write(tmp_path, "a.md", f"{decomposed}\n")
+        _write(tmp_path, "b.md", f"{decomposed}\n{text} end\n")
+        result = _search(tmp_path, f"{query} end")
+        assert _hits(result) == [("b.md", 2)]
+        assert result.matches[0].snippet == f"{composed} end"
 
 
 # Skipped notes and explicit targets

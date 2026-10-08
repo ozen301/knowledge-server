@@ -147,9 +147,19 @@ knowledge_search(
   whitespace-only queries, newlines, NULs, and queries exceeding the
   query-length limit. No regex, query language, stemming, or implicit word
   splitting.
-- Case behavior follows ripgrep's Unicode-aware case-insensitive matching
-  unless `case_sensitive=true`; include non-ASCII cases in fixtures. No Unicode
-  normalization is performed.
+- Search compares the notes and the queries in Unicode Normalization Form C
+  (NFC), so canonically equivalent text matches: `é` stored as one code point
+  or as `e` followed by a combining accent (U+0301), and `が` stored as one
+  code point or as `か` followed by a combining voiced mark (U+3099). The
+  query limits apply to the queries as sent, before normalization. A query
+  matches whole NFC characters only, so `Herve` does not match `Hervé` in
+  either form. Compatibility forms remain distinct, because search does not
+  apply NFKC: full-width `＋` does not match half-width `+`.
+- Case behavior follows ripgrep's Unicode-aware case-insensitive matching on
+  the NFC text unless `case_sensitive=true`; include non-ASCII cases in
+  fixtures. A few equivalent forms do not match ignoring case, because NFC
+  composes one case but not the other: `j` followed by U+030C becomes `ǰ`
+  (U+01F0), while `J` followed by U+030C has no composed form.
 - One hit per matching line, even with multiple occurrences on that line or
   matches of several queries. A hit does not say which query matched. Sort
   paths case-sensitively by Unicode code-point order, then by line number. No
@@ -158,21 +168,13 @@ knowledge_search(
   limits the hits of all queries together, so a query with many hits in
   early paths can leave no room for the others. Fetch one additional hit to
   determine result-limit truncation.
-- Snippet: a window of the matching line around the first match of any query
-  on that line, as [defined below](#snippet-window). Paths and line numbers
-  allow a full read.
+- Snippet: a window of the NFC form of the matching line around the first
+  match of any query on that line, as [defined below](#snippet-window). Paths
+  and line numbers refer to the original note and allow a full read.
 - Search does not paginate: narrow the path or the queries when truncated.
 - Missing/disallowed explicit targets are errors. During recursive search,
   unreadable, invalid-encoding, oversized, or concurrently removed files are
   skipped and counted by reason, without exposing hidden filenames.
-
-Known limitation: visually identical text can use different Unicode
-representations, such as `é` versus `e` followed by a combining accent, or `が`
-versus `か` followed by a combining voiced mark. These representations can fail
-to match. Half-width and full-width forms also remain distinct. NFC-equivalent
-matching is the first candidate on the
-[roadmap](roadmap.md#nfc-equivalent-matching); the tests document these
-missed matches.
 
 Result shape:
 
@@ -195,16 +197,20 @@ Do not claim an exact total hit count.
 
 #### Snippet window
 
-The snippet is an exact substring of the matching line, with no ellipsis or
-other marker added. The line is the reader's version of it: without a leading
-BOM or the line ending, and without whitespace trimming. The first match is
-the first occurrence of any query that ripgrep reports on the line. Its start
-and end are code point positions derived from ripgrep's reported byte
-offsets, not from the query length, because a case-insensitive match can
-differ in length from the query. With `L` as the snippet-length limit, a
-line of at most `L` code points is the whole snippet. For a longer line, the
-snippet is exactly `L` code points; a match that fits is centered, with an
-odd extra code point after it, and the window slides to stay inside the line.
+The snippet is an exact substring of the NFC form of the matching line, with
+no ellipsis or other marker added. The line is the reader's version of it:
+without a leading BOM or the line ending, and without whitespace trimming.
+Where the note stores decomposed text, the snippet looks the same as the note
+but contains different code points. Build the `old` text of an edit from
+`knowledge_read`, not from a snippet: a snippet's text can fail to match the
+note, or match a different line. The first match is the first occurrence of
+any query that ripgrep reports on the line. Its start and end are code point
+positions derived from ripgrep's reported byte offsets, not from the query
+length, because a case-insensitive match can differ in length from the
+query. With `L` as the snippet-length limit, a line of at most `L` code points
+is the whole snippet. For a longer line, the snippet is exactly `L` code
+points; a match that fits is centered, with an odd extra code point after it,
+and the window slides to stay inside the line.
 With `start` and `length` measured in code points:
 
 ```text
@@ -235,10 +241,11 @@ is exposed.
 Search loads each candidate note with the reader's bounded loader, which
 opens every path component without following symlinks, and counts skipped
 notes by reason. It then sends the loaded text, in result order, to one
-ripgrep process on standard input, as the reader sees it: without a BOM, with
-CRLF normalized to LF, and with every line ending in LF. ripgrep never opens a
-vault file, so a file changed or replaced after loading cannot affect the
-matches. Its `--max-count` of `max_results + 1` stops the search once the
+ripgrep process on standard input. The text is the reader's version,
+without a BOM, with CRLF normalized to LF, and with every line ending in LF,
+converted to NFC. NFC does not add or remove line breaks, so the line numbers
+are those of the original note. ripgrep never opens a vault file, so a file
+changed or replaced after loading cannot affect the matches. Its `--max-count` of `max_results + 1` stops the search once the
 result is known to be truncated. ripgrep requirements:
 
 - Fixed-string JSON output, `--encoding none` so that byte offsets refer to

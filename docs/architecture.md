@@ -151,9 +151,10 @@ it, and it runs in two stages:
 1. **Load.** A worker thread discovers notes with the path policy and loads
    each one with the shared loader. Notes that cannot be read are skipped and
    counted.
-2. **Match.** The loaded text goes, in sorted path order, to one ripgrep
-   process on standard input. Search maps each reported line back to a note
-   and line, and checks that it equals the text sent.
+2. **Match.** The loaded text, converted to Unicode NFC like the queries,
+   goes in sorted path order to one ripgrep process on standard input. Search
+   maps each reported line back to a note and line, and checks that it equals
+   the text sent.
 
 ripgrep never opens a vault file. A note replaced by a symlink after the
 policy check therefore cannot make ripgrep read outside the vault, and a note

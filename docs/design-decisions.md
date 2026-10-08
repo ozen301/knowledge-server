@@ -90,9 +90,10 @@ reachable over HTTP. Reconsider two choices only when their trigger occurs:
 
 - **ripgrep matching.** Search loads and checks every note in its scope in
   Python and uses ripgrep only to match the loaded text. Consider an
-  in-process matcher only when NFC or performance work justifies changing the
-  match stage. A replacement must keep the agreed case behavior, citations,
-  budgets, cancellation, and skipped counts. It is not known whether Python
+  in-process matcher only when performance work or a matching requirement
+  that ripgrep cannot meet justifies changing the match stage. A replacement
+  must keep the agreed case behavior, citations, budgets, cancellation, and
+  skipped counts. It is not known whether Python
   matching can reproduce ripgrep's case-insensitive behavior exactly.
 - **Internal SDK classes.** To keep strict argument validation, the adapter
   builds tools from SDK classes that the SDK does not export, as the

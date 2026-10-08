@@ -465,7 +465,12 @@ class SearchMatch(ContractModel):
 
     path: str = Field(description="Matching note, relative to the vault root.")
     line: StrictPositiveInt = Field(description="Line number of the match.")
-    snippet: str = Field(description="Part of the line around the first match.")
+    snippet: str = Field(
+        description=(
+            "Part of the line around the first match, in Unicode NFC form. "
+            "Copy edit text from knowledge_read, not from a snippet."
+        )
+    )
     snippet_truncated: bool = Field(
         description="True when the snippet is shorter than the whole line."
     )

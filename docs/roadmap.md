@@ -30,7 +30,6 @@ None.
 
 | Idea | Trigger and constraint |
 |---|---|
-| [NFC-equivalent matching](#nfc-equivalent-matching) | The first evidence-backed retrieval improvement |
 | Queries that require all of several words (AND), a rebuildable index such as SQLite FTS5, or ranking | Real questions fail because one literal phrase cannot combine separate words, or latency or search budgets block use; stale and missing sources must be handled |
 | Additional formats, likely text-based PDF first | Needed sources exist outside Markdown; hits must remain traceable to the original file and page or section |
 | Semantic retrieval with multilingual embeddings | The saved evaluation shows misses that lexical search cannot fix; exact search and CPU-only operation must remain useful |
@@ -39,28 +38,6 @@ None.
 SQLite FTS5, document converters, and vector stores are candidates, not
 current dependencies. Choose them only after the repeatable evaluation
 demonstrates a need.
-
-## NFC-equivalent matching
-
-This is the first evidence-backed retrieval improvement, because visually
-identical Unicode text can use different character sequences. The [retrieval
-questions](sample-notes.md#known-weaknesses) recorded false no-answer results
-when decomposed text was the only way to a note (E8, J6).
-
-Specify it before implementation. Any implementation searches normalized
-text. The current contract returns snippets, paths, and line numbers from the
-original source, and that guarantee stays unless the specification changes
-it. Snippets from normalized text are an option for that decision: paths and
-line numbers stay exact, but the quoted characters differ from the file's
-bytes and can render differently. Width equivalence, such as `＋` and `+`, is
-a separate decision.
-
-If the work changes the match stage, it may consider an in-process matcher
-under the conditions in [existing implementation
-choices](design-decisions.md#existing-implementation-choices). Rerun E5, E8,
-J4, and J6 as [Check a retrieval
-change](sample-notes.md#check-a-retrieval-change) describes, and update the
-known weaknesses when the change is adopted.
 
 ## Retrieval constraints
 

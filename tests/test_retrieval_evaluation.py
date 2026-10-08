@@ -58,7 +58,7 @@ def _read(path: str, start_line: int, end_line: int) -> str:
         ("E2", "Git repositories", [(NAS, 27), (NAS, 29)]),
         ("E3", "mAP", [(METRICS, 22)]),
         ("E4", "middle ground", [(QUANT, 13)]),
-        ("E5", "Jégou", []),
+        ("E5", "Jégou", [(SEMANTIC, 18)]),
         ("E5", "Jegou", []),
         ("E5", "FAISS", [(SEMANTIC, 12), (SEMANTIC, 14)]),
         ("E5", "Douze", [(SEMANTIC, 18)]),
@@ -70,11 +70,9 @@ def _read(path: str, start_line: int, end_line: int) -> str:
             [(NAS, 5), (NAS, 12), (NAS, 21), (NAS, 25)]
             + [(DEVBOX, line) for line in (21, 113, 114, 187, 218, 219, 227)],
         ),
-        ("E8", "Hervé Jégou", []),
-        ("E8", "Hervé", []),
-        # The decomposed é starts with a plain e, so a query that ends just
-        # before the accent matches.
-        ("E8", "Herve", [(SEMANTIC, 18)]),
+        ("E8", "Hervé Jégou", [(SEMANTIC, 18)]),
+        ("E8", "Hervé", [(SEMANTIC, 18)]),
+        ("E8", "Herve", []),
         ("J1", "利点", [(EGOCENTRIC, 13), (STATE_CHANGE, 66)]),
         ("J2", "数字+単位", []),
         ("J2", "数字＋単位", [(VLM, 3)]),
@@ -86,11 +84,11 @@ def _read(path: str, start_line: int, end_line: int) -> str:
             + [(STATE_CHANGE, line) for line in (34, 40, 104, 111, 119)],
         ),
         ("J3", "3,670", [(EGO4D, 5)]),
-        ("J4", "ベンチマーク", []),
+        ("J4", "ベンチマーク", [(EGO4D, 11)]),
         (
             "J4",
             "データセット",
-            [(EGO4D, 3)] + [(STATE_CHANGE, line) for line in (30, 32, 81)],
+            [(EGO4D, 3), (EGO4D, 12)] + [(STATE_CHANGE, line) for line in (30, 32, 81)],
         ),
         ("J4", "Episodic Memory", [(EGO4D, 11)]),
         (
@@ -98,7 +96,7 @@ def _read(path: str, start_line: int, end_line: int) -> str:
             "行動認識",
             [(EGO4D, 18), (EGOCENTRIC, 29), (STATE_CHANGE, 11), (STATE_CHANGE, 120)],
         ),
-        ("J6", "ベンチ", []),
+        ("J6", "ベンチ", [(EGO4D, 11)]),
         ("J6", "benchmark", []),
         ("E9", "Node.js", [(DEVBOX, 78), (DEVBOX, 92)]),
         ("E9", "nvm", [(DEVBOX, 78), (DEVBOX, 95), (DEVBOX, 96)]),
@@ -157,8 +155,8 @@ def test_decomposed_answer_lines(
 ) -> None:
     """These lines store accents and voiced marks as combining characters.
 
-    If an editor normalizes the notes to NFC, the evaluation of the Unicode
-    limitation no longer applies, and this test fails.
+    If an editor normalizes the notes to NFC, the evaluation no longer checks
+    that search matches equivalent forms, and this test fails.
     """
     content = _read(path, start_line, end_line)
     assert answer not in content
