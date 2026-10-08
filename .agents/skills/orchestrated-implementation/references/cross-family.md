@@ -1,7 +1,7 @@
 # Models and cross-family commands
 
 This file is the only place in the skill that names model identifiers. They
-were checked on 2026-09-30. If a tool rejects one, tell the user and choose
+were checked on 2026-10-08. If a tool rejects one, tell the user and choose
 again.
 
 The table gives model options for different task demands. Choose a model
@@ -11,7 +11,7 @@ determines neither.
 
 | Tier | Claude family | OpenAI (Codex) family |
 |---|---|---|
-| Light | `claude-haiku-4-5-20251001` | `gpt-6-luna` |
+| Light | `claude-haiku-5-5` | `gpt-6-luna` |
 | Standard | `claude-sonnet-5-5` | `gpt-6.1-sol` |
 | Strongest | `claude-opus-5-5` | `gpt-6-astra` |
 
