@@ -284,6 +284,9 @@ def test_write_tools_are_served_only_when_enabled(vault: Path) -> None:
         assert tool.annotations.open_world_hint is False
         assert tool.annotations.title
         assert "proposal" in (tool.description or "")
+        assert "read AGENTS.md at the root" in (tool.description or "")
+        assert "search with the knowledge tools instead" in (tool.description or "")
+        assert "never by an inbox/ path" in (tool.description or "")
     assert tools["knowledge_propose_note"].annotations.destructive_hint is False
     assert tools["knowledge_propose_edit"].annotations.destructive_hint is True
     assert "never on your own initiative" in (

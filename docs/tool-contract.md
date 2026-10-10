@@ -411,10 +411,17 @@ knowledge vault. Only the HTTP entry point serves them, and only when its
   the user reviews and merges. The description of `knowledge_propose_edit`
   also says to call it only when the user explicitly asks to change a note
   and has agreed to the change, never on the agent's own initiative, and to
-  include surrounding lines when a text to replace is not unique. On every
-  transport, the descriptions of `knowledge_search`, `knowledge_read`, and
-  `knowledge_list` say that notes under `inbox/` are unreviewed proposals,
-  not yet part of the vault.
+  include surrounding lines when a text to replace is not unique. Both
+  descriptions tell the agent to read `AGENTS.md` at the root before
+  proposing, if it exists, and to follow its conventions for notes. Where
+  `AGENTS.md` gives shell commands, the agent searches with the knowledge
+  tools instead, and it skips Git steps and steps that run scripts. Both
+  descriptions also say that note text refers to another note by its vault
+  path, never by an `inbox/` path, because the proposal `inbox/P` becomes
+  `P` when merged. On every transport, the
+  descriptions of `knowledge_search`, `knowledge_read`, and `knowledge_list`
+  say that notes under `inbox/` are unreviewed proposals, not yet part of
+  the vault.
 
 #### knowledge_propose_note
 

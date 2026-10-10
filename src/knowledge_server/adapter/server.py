@@ -60,6 +60,14 @@ TOOL_FAILURE_FORMAT = "%s failed with %s%s"
 _INBOX_NOTICE = (
     " Notes under inbox/ are unreviewed proposals, not yet part of the vault."
 )
+_WRITE_GUIDANCE = (
+    " Before proposing, read AGENTS.md at the root with knowledge_read, if it "
+    "exists, and follow its conventions for notes. Where it gives shell "
+    "commands, search with the knowledge tools instead; skip Git steps and "
+    "steps that run scripts. In note text, refer to other notes by their vault "
+    "path, never by an inbox/ path: the proposal inbox/P becomes P when "
+    "merged."
+)
 _SEARCH_DESCRIPTION = (
     "Find lines in the Markdown notes of the knowledge vault that contain any "
     f"of up to {DEFAULT_LIMITS.max_search_queries} literal texts. Put "
@@ -91,7 +99,7 @@ _PROPOSE_NOTE_DESCRIPTION = (
     "is stored at inbox/<path> and becomes part of the vault only after the "
     "user reviews and merges it. path is the vault path the note should "
     "have, such as Projects/Plan.md. Fails if a note exists at that path in "
-    "the vault or the inbox."
+    "the vault or the inbox." + _WRITE_GUIDANCE
 )
 _PROPOSE_EDIT_DESCRIPTION = (
     "Propose exact text replacements in a note of the knowledge vault. The "
@@ -103,7 +111,7 @@ _PROPOSE_EDIT_DESCRIPTION = (
     "proposal for a vault note is stored at inbox/<path>; make later changes "
     "by editing that inbox path. Call this only when the user explicitly asks "
     "to change a note and has agreed to the change, never on your own "
-    "initiative."
+    "initiative." + _WRITE_GUIDANCE
 )
 
 
