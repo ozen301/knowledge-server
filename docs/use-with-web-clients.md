@@ -40,9 +40,9 @@ distribution, also adjust the package installation, the Python path, and, if
 | Server unit | `/etc/systemd/system/knowledge-server.service`, from `deploy/` |
 | cloudflared unit and tunnel token | Created by `cloudflared service install`; the token is in a root-only file in `/etc/cloudflared` |
 | Vault checkout | `/srv/knowledge-vault`, owned by the administrator's account |
-| Server's Git repository for write proposals (optional) | `/var/lib/knowledge-server/vault.git`, created by the server |
-| Write access to a vault remote on a mounted share (optional) | The unit drop-in `/etc/systemd/system/knowledge-server.service.d/vault-remote.conf` |
-| SSH key for write proposals over SSH (optional, private) | `/etc/knowledge-server/vault-remote-key`, owned by the service account, and the NAS host key in `/etc/knowledge-server/known_hosts` |
+| Server's Git repository for write proposals | `/var/lib/knowledge-server/vault.git`, created by the server |
+| Write access to the vault remote (mounted share only) | The unit drop-in `/etc/systemd/system/knowledge-server.service.d/vault-remote.conf` |
+| SSH key for write proposals (SSH only, private) | `/etc/knowledge-server/vault-remote-key`, owned by the service account, and the NAS host key in `/etc/knowledge-server/known_hosts` |
 | Synchronization | A line in the administrator's crontab |
 | Logs | `journalctl -u knowledge-server`, `journalctl -u cloudflared` |
 | Cloudflare and client settings | The Cloudflare dashboard, and the connector settings in ChatGPT and Claude.ai |
@@ -124,7 +124,7 @@ synchronization changes it; do not edit or commit in it.
 
    cron cannot enter a passphrase, so the SSH key for the vault remote must
    work without one. A key that the NAS limits to reading is safer. [Write
-   proposals](#enable-write-proposals) over SSH use a separate key.
+   proposals](#set-up-write-proposals) over SSH use a separate key.
 
 ### Install the server
 
@@ -197,84 +197,20 @@ synchronization changes it; do not edit or commit in it.
    `curl` can fail to connect; retry for up to 10 seconds. If no 401 with
    `no-store` appears, see [Troubleshooting](#troubleshooting).
 
-### Install the tunnel connector
+### Set up write proposals
 
-1. In the Cloudflare dashboard, open the tunnel's installation commands for
-   Debian or Ubuntu and run them: they install the `cloudflared` package and
-   then run `sudo cloudflared service install <token>`. That command saves the
-   token in a file in `/etc/cloudflared` that only root can read, and creates
-   a systemd unit that starts cloudflared at boot.
-2. In the tunnel's published route for the MCP hostname, set the service to
-   `http://127.0.0.1:8000`. Under **Additional application settings -> HTTP
-   Settings**, set **HTTP Host Header** to the configured `public_host`.
-   Cloudflare does not document which Host cloudflared sends when this
-   setting is empty, and the server rejects any other Host. Use `127.0.0.1`,
-   not `localhost`, which can resolve to IPv6 `::1`, where the server does
-   not listen.
-   Confirm that no Cache Rule or Page Rule covers the MCP hostname.
-3. Check that cloudflared received the route:
-
-   ```sh
-   journalctl -u cloudflared | grep 'Updated to new configuration' | tail -1
-   ```
-
-   Expected result: the route entry contains
-   `"service":"http://127.0.0.1:8000"` and `"httpHostHeader"` with the value
-   of `public_host`. Then check the public endpoint:
-
-   ```sh
-   curl -si https://<mcp-hostname>/mcp
-   ```
-
-   Expected result: status 401 from Cloudflare with a `www-authenticate`
-   header that names the protected-resource metadata.
-
-### Connect ChatGPT
-
-1. In ChatGPT's developer mode, create a connector with OAuth
-   authentication and the MCP server URL `https://<mcp-hostname>/mcp`. The
-   URL must end in `/mcp`: it is the only path that serves MCP and the
-   resource that the protected-resource metadata advertises. After
-   authorization, the server answers every other path, including `/`, with
-   404. ChatGPT registers itself with dynamic client registration.
-2. Sign in as the vault owner when Cloudflare asks.
-3. In a chat with the connector enabled, ask a question that a known note in
-   the scope answers, and ask for a citation. Expected result: the right
-   answer, citing that note and its lines, and request lines with
-   `status=200` in `journalctl -u knowledge-server`.
-
-### Connect Claude.ai
-
-1. In Claude.ai, open Customize -> Connectors and select Add custom
-   connector.
-2. Enter the MCP server URL `https://<mcp-hostname>/mcp`, and choose OAuth
-   sign-in with Register automatically (dynamic client registration).
-3. Select Connect and sign in as the vault owner when Cloudflare asks.
-4. Check the connection as in step 3 of [Connect ChatGPT](#connect-chatgpt),
-   with the connector turned on in the chat's + -> Connectors menu.
-
-Claude.ai chooses when to call the tools from their names and descriptions.
-To make it search the notes, mention them in the question or in your
-Claude.ai instructions.
-
-### Enable write proposals
-
-This step is optional. It lets the client save new notes and edits as
-proposals, branches of the vault remote, which you then [review and
+Write proposals let the client save new notes and edits as proposals,
+branches of the vault remote, which you then [review and
 merge](#review-proposals) in any clone; the server never changes the notes
 themselves. The server creates the commits in a Git repository of its own,
 `/var/lib/knowledge-server/vault.git`, which it creates at startup, and
 pushes them to the vault remote.
 
-Write proposals need a server version that has proposal branches. If the
-installed version is older, [update the server](#update-the-server) first:
-an older version rejects `vault_remote` and does not start.
-
-The server reaches the vault remote in one of two ways. If the VM mounts the NAS
-share that holds the vault remote, the server can push to its path, and needs no
-SSH key and no SSH access to the NAS. Otherwise it pushes over SSH with a key of
-its own. Give the server access as one of the next two sections describes, and
-then [configure and test write proposals](#configure-and-test-write-proposals).
+The server reaches the vault remote in one of two ways. If the VM mounts the
+NAS share that holds the vault remote, the server can push to its path, and
+needs no SSH key and no SSH access to the NAS. Otherwise it pushes over SSH
+with a key of its own. Give the server access as one of the next two sections
+describes, and then [configure write proposals](#configure-write-proposals).
 
 #### Vault remote on a mounted share
 
@@ -344,36 +280,102 @@ the path nor the target of a symlink in it may be under `/home`, `/root`,
    Expected result: one line with a commit ID and `refs/heads/main`. An
    error means that the key, the host key, or the URL is wrong. The check
    shows only that the server can read the vault remote; the test note in
-   [Configure and test write
-   proposals](#configure-and-test-write-proposals) shows that it can push.
+   [Connect ChatGPT](#connect-chatgpt) shows that it can push.
 
-#### Configure and test write proposals
+#### Configure write proposals
 
-1. Add one of these lines to `/etc/knowledge-server/config.toml` with
-   `sudoedit`, for a mounted share or for SSH:
+Add one of these lines to `/etc/knowledge-server/config.toml` with
+`sudoedit`, for a mounted share or for SSH:
 
-   ```toml
-   vault_remote = "<vault-remote-path>"
-   vault_remote = "ssh://<nas-user>@<nas-host>/<path-to-vault.git>"
-   ```
+```toml
+vault_remote = "<vault-remote-path>"
+vault_remote = "ssh://<nas-user>@<nas-host>/<path-to-vault.git>"
+```
 
-   For SSH, use the URL that you checked, in the `ssh://` form; the server
-   rejects the short form `<nas-user>@<nas-host>:<path>`. Run
-   `sudo systemctl restart knowledge-server`, and repeat the `curl` check of
-   [Install the server](#install-the-server) step 5. If it fails, look for a
-   `startup category=...` line in `journalctl -u knowledge-server -n 20`,
-   and see [Troubleshooting](#troubleshooting). systemd restarts a failed
-   server every few seconds, so the unit can look active while it fails.
-2. In ChatGPT or Claude.ai, check that the connector lists
-   `knowledge_propose_note`, `knowledge_propose_edit`, and
-   `knowledge_list_proposals`; if it does not, refresh the connector. Ask the
-   client to save a short test note; it may write without asking for
-   confirmation, because you asked for the write. Then accept or reject the
-   test note as [Review proposals](#review-proposals) describes.
+For SSH, use the URL that you checked, in the `ssh://` form; the server
+rejects the short form `<nas-user>@<nas-host>:<path>`. Run
+`sudo systemctl restart knowledge-server`, and repeat the `curl` check of
+[Install the server](#install-the-server) step 5. If it fails, look for a
+`startup category=...` line in `journalctl -u knowledge-server -n 20`, and
+see [Troubleshooting](#troubleshooting). systemd restarts a failed server
+every few seconds, so the unit can look active while it fails.
 
 To disable writing, remove the `vault_remote` line, and the drop-in if you
-added one, run `sudo systemctl daemon-reload`, and restart the server. You can then delete
-`/var/lib/knowledge-server/vault.git`.
+added one, run `sudo systemctl daemon-reload`, and restart the server. You
+can then delete `/var/lib/knowledge-server/vault.git`.
+
+### Install the tunnel connector
+
+1. In the Cloudflare dashboard, open the tunnel's installation commands for
+   Debian or Ubuntu and run them: they install the `cloudflared` package and
+   then run `sudo cloudflared service install <token>`. That command saves the
+   token in a file in `/etc/cloudflared` that only root can read, and creates
+   a systemd unit that starts cloudflared at boot.
+2. In the tunnel's published route for the MCP hostname, set the service to
+   `http://127.0.0.1:8000`. Under **Additional application settings -> HTTP
+   Settings**, set **HTTP Host Header** to the configured `public_host`.
+   Cloudflare does not document which Host cloudflared sends when this
+   setting is empty, and the server rejects any other Host. Use `127.0.0.1`,
+   not `localhost`, which can resolve to IPv6 `::1`, where the server does
+   not listen.
+   Confirm that no Cache Rule or Page Rule covers the MCP hostname.
+3. Check that cloudflared received the route:
+
+   ```sh
+   journalctl -u cloudflared | grep 'Updated to new configuration' | tail -1
+   ```
+
+   Expected result: the route entry contains
+   `"service":"http://127.0.0.1:8000"` and `"httpHostHeader"` with the value
+   of `public_host`. Then check the public endpoint:
+
+   ```sh
+   curl -si https://<mcp-hostname>/mcp
+   ```
+
+   Expected result: status 401 from Cloudflare with a `www-authenticate`
+   header that names the protected-resource metadata.
+
+### Connect ChatGPT
+
+1. In ChatGPT's developer mode, create a connector with OAuth
+   authentication and the MCP server URL `https://<mcp-hostname>/mcp`. The
+   URL must end in `/mcp`: it is the only path that serves MCP and the
+   resource that the protected-resource metadata advertises. After
+   authorization, the server answers every other path, including `/`, with
+   404. ChatGPT registers itself with dynamic client registration.
+
+   ChatGPT uses the connector's description to decide when to call the
+   tools. This example tells it when to search, how literal search works,
+   and how proposals behave. Adapt it to your notes.
+
+   ```text
+   Access to my personal Markdown notes. Use it when I ask about my notes, or about something I may have written down. Search is literal text matching, not semantic: try specific words, synonyms, and both English and Japanese terms. You can also save new notes and propose edits, but only as proposals that I review before they change my notes. Save a new note when I ask you to keep something. Propose an edit only when I ask for one and agree to the change. Search and knowledge_list show only my notes, not unmerged proposals; to see proposals, use knowledge_list_proposals, and pass a proposal to knowledge_read. To change something you proposed earlier, revise its proposal instead of starting a new one.
+   ```
+
+2. Sign in as the vault owner when Cloudflare asks.
+3. In a chat with the connector enabled, ask a question that a known note in
+   the scope answers, and ask for a citation. Expected result: the right
+   answer, citing that note and its lines, and request lines with
+   `status=200` in `journalctl -u knowledge-server`. Then ask ChatGPT to save
+   a short test note; it may write without asking for confirmation, because
+   you asked for the write. Expected result: the name of a new proposal
+   branch. Accept or reject the test note as [Review
+   proposals](#review-proposals) describes.
+
+### Connect Claude.ai
+
+1. In Claude.ai, open Customize -> Connectors and select Add custom
+   connector.
+2. Enter the MCP server URL `https://<mcp-hostname>/mcp`, and choose OAuth
+   sign-in with Register automatically (dynamic client registration).
+3. Select Connect and sign in as the vault owner when Cloudflare asks.
+4. Check the connection as in step 3 of [Connect ChatGPT](#connect-chatgpt),
+   with the connector turned on in the chat's + -> Connectors menu.
+
+Claude.ai chooses when to call the tools from their names and descriptions.
+To make it search the notes, mention them in the question or in your
+Claude.ai instructions.
 
 ## Operate the services
 

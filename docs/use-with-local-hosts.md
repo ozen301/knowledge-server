@@ -112,7 +112,7 @@ If the command works by hand but not in the host:
   startup, so restart the host, or the HTTP service, after moving the vault.
 - **No note changes.** The server never changes a note. Over stdio it
   writes no files and runs no Git commands; over HTTP, web clients can save
-  [write proposals](use-with-web-clients.md#enable-write-proposals) as
+  [write proposals](use-with-web-clients.md#set-up-write-proposals) as
   branches of the vault remote for you to review. You synchronize the local
   vault checkout with Git yourself. Results during a pull or checkout can
   mix old and new files; repeat the question afterwards.
