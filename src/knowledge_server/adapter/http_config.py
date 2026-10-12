@@ -153,9 +153,11 @@ def _vault_remote(value: object) -> bool:
         char.isspace() or unicodedata.category(char) == "Cc" for char in value
     ):
         return False
+    if value.startswith("/"):
+        return True
     if (
         re.fullmatch(
-            r"ssh://[^:/@?#]+@(?:\[[^\[\]]+\]|[^:/@?#]+)(?::[0-9]+)?/[^?#]+", value
+            r"ssh://[^:/@?#]+@(?:\[[^\[\]]+\]|[^:/@?#]+)(?::[0-9]*)?/[^?#]+", value
         )
         is None
     ):
@@ -183,8 +185,8 @@ class LaunchConfig:
             the mode's startup check to `root`.
         root: Resolved absolute path to the directory that the tools expose.
         http: The validated transport and authorization settings.
-        vault_remote: SSH URL of the vault remote; enables proposal tools
-            and is valid only in vault mode.
+        vault_remote: SSH URL or absolute path of the vault remote; enables
+            proposal tools and is valid only in vault mode.
     """
 
     mode: LaunchMode
@@ -198,8 +200,8 @@ def load_launch_config(path: Path) -> LaunchConfig:
 
     The file must set `mode` to `"synthetic"` or `"vault"`, `root`, and the
     required `HTTPConfig` fields; unknown fields are rejected, and no mode is
-    assumed. The optional `vault_remote` SSH URL enables proposal tools
-    and is valid only in `vault` mode.
+    assumed. The optional `vault_remote`, an SSH URL or an absolute path,
+    enables proposal tools and is valid only in `vault` mode.
     `KNOWLEDGE_ROOT` and `.env` files are not read, but `root`
     passes the same validation as `KNOWLEDGE_ROOT`.
 

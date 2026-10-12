@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import os
 import selectors
+import shlex
 import signal
 import subprocess
 import tempfile
@@ -138,7 +139,8 @@ class ProposalBranches:
     Attributes:
         policy: Shared policy for root-relative note paths.
         repository: Bare object store under the server's state directory.
-        vault_remote: URL passed explicitly to remote fetches and pushes.
+        vault_remote: SSH URL or absolute path passed explicitly to remote
+            fetches and pushes.
         ssh_command: SSH command for remote operations, or None for local tests.
         limits: Note, read, and listing limits.
         checkout: Top-level of the local vault checkout.
@@ -279,6 +281,17 @@ class ProposalBranches:
             network=True,
         )
 
+    def _receive_pack(self) -> list[str]:
+        # A push to a path runs receive-pack locally, which refuses a
+        # repository that another account owns, such as one on a network
+        # share, unless safe.directory names it. Git removes `-c` settings
+        # from that process's environment, so put the setting in its command,
+        # which Git runs through the shell. Fetches need no exception.
+        if not self.vault_remote.startswith("/"):
+            return []
+        setting = shlex.quote(f"safe.directory={self.vault_remote}")
+        return [f"--receive-pack=git -c {setting} receive-pack"]
+
     def _remote_environment(self) -> dict[str, str] | None:
         return (
             {"GIT_SSH_COMMAND": self.ssh_command}
@@ -409,6 +422,7 @@ class ProposalBranches:
             [
                 "push",
                 "--porcelain",
+                *self._receive_pack(),
                 f"--force-with-lease={ref}:{lease}",
                 self.vault_remote,
                 f"{commit}:{ref}",

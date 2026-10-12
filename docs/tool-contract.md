@@ -365,13 +365,13 @@ knowledge_list(path: str = "", offset: int = 0, limit: int = 100)
 ### Write proposals
 
 When its [configuration](http-contract.md#launch-configuration) sets
-`vault_remote`, the SSH URL of the vault remote, the HTTP entry point serves
-three proposal tools: `knowledge_propose_note` and `knowledge_propose_edit`
-save proposals, and `knowledge_list_proposals` lists them. A proposal is a branch of the vault
-remote, named `proposal/<topic>-<suffix>`, that holds unreviewed changes to
-one or more notes. It takes effect only when the vault owner merges it into
-`main`. The server never changes the local vault checkout: it creates the
-commits in a bare repository of its own and pushes them to the vault remote.
+`vault_remote`, the vault remote's SSH URL or path, the HTTP entry point serves
+three proposal tools: `knowledge_propose_note` and `knowledge_propose_edit` save
+proposals, and `knowledge_list_proposals` lists them. A proposal is a branch of
+the vault remote, named `proposal/<topic>-<suffix>`, that holds unreviewed
+changes to one or more notes. It takes effect only when the vault owner merges
+it into `main`. The server never changes the local vault checkout: it creates
+the commits in a bare repository of its own and pushes them to the vault remote.
 
 - **New proposals.** A write without `proposal` needs `topic`, a short name
   for the change such as `sleep-notes-cleanup`: 1 to 40 lowercase letters

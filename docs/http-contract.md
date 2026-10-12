@@ -44,7 +44,7 @@ explicit TOML file, given by absolute path, of at most 16 KiB. It ignores
 | `public_host` | required | The public MCP hostname, in lowercase, with at least one dot and at most 253 characters, without a scheme or port. |
 | `port` | `8000` | The loopback listener port, 1–65535. |
 | `allowed_origins` | `[]` | Exact `Origin` values: `http` or `https`, a host, and an optional port; no path (not even `/`), query, fragment, credentials, or wildcard. |
-| `vault_remote` | none | The vault remote's URL, `ssh://<user>@<host>[:<port>]/<path>`, with no password, query, or fragment. Setting it serves the proposal tools; it is valid only in `vault` mode. |
+| `vault_remote` | none | The vault remote: an SSH URL, `ssh://<user>@<host>[:<port>]/<path>`, with no password, query, or fragment, or an absolute path. Setting it serves the proposal tools; it is valid only in `vault` mode. |
 
 `root` follows the [same rules as
 `KNOWLEDGE_ROOT`](tool-contract.md#configuration-and-common-policy). The
@@ -81,10 +81,13 @@ environment variable names; the service unit sets it to
 one in place, and copies the commit that the local vault checkout has
 checked out (`HEAD`), with its history, into the repository. Startup fails
 with `vault-remote` if any of these steps fails. Startup does not contact
-the vault remote. Fetches and pushes use the SSH key
+the vault remote. Fetches and pushes over SSH use the SSH key
 `/etc/knowledge-server/vault-remote-key` and the host keys in
 `/etc/knowledge-server/known_hosts`, which the [guide for web
-clients](use-with-web-clients.md#enable-write-proposals) installs.
+clients](use-with-web-clients.md#vault-remote-over-ssh) installs. When it pushes to a vault
+remote given as a path, the server names the path in Git's `safe.directory`,
+so that Git accepts the repository when another account owns it, as on a
+network share.
 
 ## Synthetic guard
 

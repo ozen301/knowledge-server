@@ -568,6 +568,39 @@ def test_imported_objects_are_independent(proposal_vault: ProposalVault) -> None
     assert store.command("log", "--format=%s", base) == b"Invented notes\n"
 
 
+def test_push_to_path_remote_owned_by_another_account(
+    tmp_path: Path, proposal_vault: ProposalVault, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """receive-pack accepts a path remote that another account owns."""
+    from knowledge_server.core import git as git_module
+
+    _, _, _, git = proposal_vault
+    remote = tmp_path / "it's a remote.git"
+    (tmp_path / "remote.git").rename(remote)
+    checkout, state, _, _ = proposal_vault
+    store = ProposalBranches(
+        PathPolicy(checkout), str(remote), state_directory=state, ssh_command=None
+    )
+    original = git_module.run_git
+
+    def foreign_owner(directory, arguments, **kwargs):
+        if "push" not in arguments:
+            return original(directory, arguments, **kwargs)
+        # Git then treats every repository as owned by another account; the
+        # pushing repository is the server's own and gets its own exception.
+        kwargs["extra_env"] = {
+            **(kwargs.get("extra_env") or {}),
+            "GIT_TEST_ASSUME_DIFFERENT_OWNER": "1",
+        }
+        return original(
+            directory, ["-c", f"safe.directory={directory}", *arguments], **kwargs
+        )
+
+    monkeypatch.setattr(git_module, "run_git", foreign_owner)
+    result = _note(store)
+    assert git(remote, "show", f"{result.proposal}:new.md") == b"new\n"
+
+
 def test_new_proposal_uses_imported_oid(
     proposal_vault: ProposalVault, monkeypatch: pytest.MonkeyPatch
 ) -> None:

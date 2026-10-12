@@ -809,7 +809,7 @@ def test_explicit_launch_configuration_and_guard(
 
 
 def test_vault_remote_setting(tmp_path: Path) -> None:
-    """Only an explicit SSH URL in vault mode enables proposal access."""
+    """Only an SSH URL or absolute path in vault mode enables proposal access."""
     root = tmp_path / "invented"
     shutil.copytree(FIXTURES, root)
     path = tmp_path / "config.toml"
@@ -821,6 +821,9 @@ def test_vault_remote_setting(tmp_path: Path) -> None:
         "ssh://owner@vault.example.com:65535/notes.git",
         "ssh://git@[2001:db8::1]:22/notes.git",
         "ssh://git@vault.example.com/日本語.git",
+        "ssh://git@vault.example.com:/notes.git",
+        "/tmp/local.git",
+        "/mnt/share/git/日本語.git",
     ):
         path.write_text(
             _config_text(root, "vault")
@@ -839,7 +842,10 @@ def test_vault_remote_setting(tmp_path: Path) -> None:
             for remote in (
                 "",
                 "relative.git",
-                "/tmp/local.git",
+                "./local.git",
+                "~/local.git",
+                "/tmp/a b.git",
+                "/tmp/a\nb.git",
                 "git@vault.example.com:notes.git",
                 "https://git@vault.example.com/notes.git",
                 "SSH://git@vault.example.com/notes.git",
@@ -850,7 +856,6 @@ def test_vault_remote_setting(tmp_path: Path) -> None:
                 "ssh://git@/notes.git",
                 "ssh://git@vault.example.com",
                 "ssh://git@vault.example.com/",
-                "ssh://git@vault.example.com:/notes.git",
                 "ssh://git@vault.example.com:0/notes.git",
                 "ssh://git@vault.example.com:65536/notes.git",
                 "ssh://git@vault.example.com:-1/notes.git",

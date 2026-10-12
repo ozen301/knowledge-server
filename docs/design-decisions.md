@@ -86,9 +86,11 @@ abstraction before a second backend exists.
    service unit, not only the path policy, keeps the local vault checkout
    read-only.
 
-The server pushes proposals with an SSH key of the service account, and a
-plain SSH Git remote cannot limit a key to some branches. A compromised
-server could therefore change `main`. Unreviewed text also stays in the
+The server needs write access to the vault remote: an SSH key of the
+service account, or, for a vault remote on a network share mounted on the
+VM, write access to the repository's directory. Neither a plain SSH Git
+remote nor file permissions can limit that access to some branches, so a
+compromised server could change `main`. Unreviewed text also stays in the
 history of the vault remote, its backups, and every clone that fetched a
 proposal branch, even after the branch is deleted. The vault owner accepts
 both risks, so that proposals can be reviewed in any clone with Git alone.

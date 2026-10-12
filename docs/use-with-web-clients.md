@@ -41,7 +41,8 @@ distribution, also adjust the package installation, the Python path, and, if
 | cloudflared unit and tunnel token | Created by `cloudflared service install`; the token is in a root-only file in `/etc/cloudflared` |
 | Vault checkout | `/srv/knowledge-vault`, owned by the administrator's account |
 | Server's Git repository for write proposals (optional) | `/var/lib/knowledge-server/vault.git`, created by the server |
-| SSH key for write proposals (optional, private) | `/etc/knowledge-server/vault-remote-key`, owned by the service account, and the NAS host key in `/etc/knowledge-server/known_hosts` |
+| Write access to a vault remote on a mounted share (optional) | The unit drop-in `/etc/systemd/system/knowledge-server.service.d/vault-remote.conf` |
+| SSH key for write proposals over SSH (optional, private) | `/etc/knowledge-server/vault-remote-key`, owned by the service account, and the NAS host key in `/etc/knowledge-server/known_hosts` |
 | Synchronization | A line in the administrator's crontab |
 | Logs | `journalctl -u knowledge-server`, `journalctl -u cloudflared` |
 | Cloudflare and client settings | The Cloudflare dashboard, and the connector settings in ChatGPT and Claude.ai |
@@ -123,7 +124,7 @@ synchronization changes it; do not edit or commit in it.
 
    cron cannot enter a passphrase, so the SSH key for the vault remote must
    work without one. A key that the NAS limits to reading is safer. [Write
-   proposals](#enable-write-proposals) use a separate key.
+   proposals](#enable-write-proposals) over SSH use a separate key.
 
 ### Install the server
 
@@ -263,12 +264,50 @@ proposals, branches of the vault remote, which you then [review and
 merge](#review-proposals) in any clone; the server never changes the notes
 themselves. The server creates the commits in a Git repository of its own,
 `/var/lib/knowledge-server/vault.git`, which it creates at startup, and
-pushes them with its own SSH key. The firewall must allow SSH from the VM to
-the NAS.
+pushes them to the vault remote.
 
 Write proposals need a server version that has proposal branches. If the
 installed version is older, [update the server](#update-the-server) first:
 an older version rejects `vault_remote` and does not start.
+
+The server reaches the vault remote in one of two ways. If the VM mounts the NAS
+share that holds the vault remote, the server can push to its path, and needs no
+SSH key and no SSH access to the NAS. Otherwise it pushes over SSH with a key of
+its own. Give the server access as one of the next two sections describes, and
+then [configure and test write proposals](#configure-and-test-write-proposals).
+
+#### Vault remote on a mounted share
+
+`<vault-remote-path>` is the absolute path of the vault remote's bare
+repository on the VM, such as `/mnt/nas/git/knowledge-vault.git`. Neither
+the path nor the target of a symlink in it may be under `/home`, `/root`,
+`/run/user`, `/tmp`, or `/var/tmp`, which the unit hides from the service.
+
+1. Let the service write in the repository, with a drop-in for the unit:
+
+   ```sh
+   sudo install -d /etc/systemd/system/knowledge-server.service.d
+   printf '[Service]\nReadWritePaths=-<vault-remote-path>\n' |
+     sudo tee /etc/systemd/system/knowledge-server.service.d/vault-remote.conf
+   sudo systemctl daemon-reload
+   ```
+
+   The unit keeps the rest of the file system read-only. The leading `-`
+   lets the server start, and serve reads, while the share is not mounted.
+2. Check that the service account can write in every directory of the
+   repository:
+
+   ```sh
+   sudo -u knowledge-server find <vault-remote-path> -type d ! -writable
+   ```
+
+   Expected result: no output. A listed directory means that the file
+   permissions do not let the service account write there. A repository
+   whose directories every account can write in, and whose
+   `core.sharedRepository` is `0777`, keeps new files writable for the
+   other accounts that push to it.
+
+#### Vault remote over SSH
 
 1. Create the server's SSH key. It has no passphrase, because the service
    cannot enter one:
@@ -280,7 +319,8 @@ an older version rejects `vault_remote` and does not start.
    ```
 
    Give the public key, `/etc/knowledge-server/vault-remote-key.pub`, push
-   access to the vault remote on the NAS.
+   access to the vault remote on the NAS. The firewall must allow SSH from
+   the VM to the NAS.
 2. Copy the NAS host key that your account already trusts, so that the
    server can check the NAS without asking:
 
@@ -304,30 +344,36 @@ an older version rejects `vault_remote` and does not start.
    Expected result: one line with a commit ID and `refs/heads/main`. An
    error means that the key, the host key, or the URL is wrong. The check
    shows only that the server can read the vault remote; the test note in
-   step 5 shows that it can push.
-4. Add this line to `/etc/knowledge-server/config.toml` with `sudoedit`,
-   with the URL of step 3:
+   [Configure and test write
+   proposals](#configure-and-test-write-proposals) shows that it can push.
+
+#### Configure and test write proposals
+
+1. Add one of these lines to `/etc/knowledge-server/config.toml` with
+   `sudoedit`, for a mounted share or for SSH:
 
    ```toml
+   vault_remote = "<vault-remote-path>"
    vault_remote = "ssh://<nas-user>@<nas-host>/<path-to-vault.git>"
    ```
 
-   The server accepts only this `ssh://` form, not the short form
-   `<nas-user>@<nas-host>:<path>`. Run
+   For SSH, use the URL that you checked, in the `ssh://` form; the server
+   rejects the short form `<nas-user>@<nas-host>:<path>`. Run
    `sudo systemctl restart knowledge-server`, and repeat the `curl` check of
    [Install the server](#install-the-server) step 5. If it fails, look for a
    `startup category=...` line in `journalctl -u knowledge-server -n 20`,
    and see [Troubleshooting](#troubleshooting). systemd restarts a failed
    server every few seconds, so the unit can look active while it fails.
-5. In ChatGPT or Claude.ai, check that the connector lists
+2. In ChatGPT or Claude.ai, check that the connector lists
    `knowledge_propose_note`, `knowledge_propose_edit`, and
    `knowledge_list_proposals`; if it does not, refresh the connector. Ask the
    client to save a short test note; it may write without asking for
    confirmation, because you asked for the write. Then accept or reject the
    test note as [Review proposals](#review-proposals) describes.
 
-To disable writing, remove the `vault_remote` line and restart the server.
-You can then delete `/var/lib/knowledge-server/vault.git`.
+To disable writing, remove the `vault_remote` line, and the drop-in if you
+added one, run `sudo systemctl daemon-reload`, and restart the server. You can then delete
+`/var/lib/knowledge-server/vault.git`.
 
 ## Operate the services
 
@@ -478,7 +524,7 @@ update, run `git -C /opt/knowledge-server switch main` before the pull.
   command; `service install` does not replace an existing service.
 - **Your vault remote key.** The synchronization uses it; it is in your
   `~/.ssh`.
-- **The server's vault remote key.** It is in
+- **The server's vault remote key,** for write proposals over SSH. It is in
   `/etc/knowledge-server/vault-remote-key`, readable only by the service
   account. To revoke it, remove its public key from the NAS.
 - **Access values.** The values in `/etc/knowledge-server/config.toml` are
@@ -494,8 +540,8 @@ No OAuth token is stored in the VM.
 
 | Symptom | Check |
 |---|---|
-| `startup category=...` in the server log | The [log policy](http-contract.md#logging) names the cause. `writable-root` means the server was started outside its unit, for example by hand from your account. `configuration` right after you enable write proposals means that `vault_remote` is not in the `ssh://` form, or that the installed version is older than proposal branches; [update the server](#update-the-server). `vault-remote` means that the server could not prepare its own Git repository: check that the installed unit has `StateDirectory=knowledge-server` and that the service account can read the vault checkout, including its `.git` directory. |
-| A proposal tool returns `GIT_FAILED` | Repeat the check of [Enable write proposals](#enable-write-proposals) step 3, and check that the NAS gives the key push access. If both are right, the server's own repository may be damaged, for example after a full disk. Run `sudo systemctl stop knowledge-server`, `sudo rm -r /var/lib/knowledge-server`, and `sudo systemctl start knowledge-server`; the start rebuilds the repository. Proposals that were pushed are on the vault remote and stay unchanged. |
+| `startup category=...` in the server log | The [log policy](http-contract.md#logging) names the cause. `writable-root` means the server was started outside its unit, for example by hand from your account. `configuration` right after you enable write proposals means that `vault_remote` is neither an absolute path nor in the `ssh://` form, or that the installed version is older than proposal branches; [update the server](#update-the-server). `vault-remote` means that the server could not prepare its own Git repository: check that the installed unit has `StateDirectory=knowledge-server` and that the service account can read the vault checkout, including its `.git` directory. |
+| A proposal tool returns `GIT_FAILED` | For a [mounted share](#vault-remote-on-a-mounted-share), check that it is mounted, and repeat the check of step 2. For [SSH](#vault-remote-over-ssh), repeat the check of step 3, and check that the NAS gives the key push access. If the access is right, the server's own repository may be damaged, for example after a full disk. Run `sudo systemctl stop knowledge-server`, `sudo rm -r /var/lib/knowledge-server`, and `sudo systemctl start knowledge-server`; the start rebuilds the repository. Proposals that were pushed are on the vault remote and stay unchanged. |
 | 401 with `event category=key-fetch-failed` | The VM cannot reach `https://<team>.cloudflareaccess.com`. After a failure, the server waits 30 seconds before it fetches again. |
 | 401 with only `event category=assertion-rejected` | `team_domain`, `audience`, or `owner_subject` does not match the Access application, or another identity sent the request. |
 | 421 | **HTTP Host Header** in the tunnel route is not `public_host`. |
