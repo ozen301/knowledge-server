@@ -1,10 +1,10 @@
-"""Bounded note loading and the read, list, and info operations.
+"""Bounded note loading and the read and list operations.
 
 Every operation checks the caller's path with `PathPolicy` before touching the
-note. Read and info then load the note with `load_note`, search with
-`load_note_text`, and edit proposals with `load_note_bytes`. All of them
-read at most the file-size limit plus one byte, so an oversized file is
-detected without reading all of it, and all apply the same content checks.
+note. Read loads the note with `load_note`, and search with
+`load_note_text`. Commit loaders use `decode_note_bytes` for the same size
+and encoding checks. Filesystem loaders read at most the file-size limit plus
+one byte, so an oversized file is detected without reading all of it.
 """
 
 import contextlib
@@ -20,8 +20,6 @@ from typing import Literal
 from knowledge_server.core.limits import DEFAULT_LIMITS, Limits
 from knowledge_server.core.models import (
     DomainErrorCode,
-    InfoRequest,
-    InfoResult,
     KnowledgeError,
     ListEntry,
     ListRequest,
@@ -82,8 +80,8 @@ def load_note(
     """Load a checked note, reading at most the file-size limit plus one byte.
 
     An oversized or invalid-text note is not an error here: it is reported
-    through `unreadable_reason`, so info can still return its metadata. Read
-    turns that reason into an error.
+    through `unreadable_reason`. The read operation turns that reason into
+    an error.
 
     Args:
         policy: The policy that checked `resolved`.
@@ -155,25 +153,17 @@ def load_note_text(
     return LoadedText(text, None)
 
 
-def load_note_bytes(
-    policy: PathPolicy, resolved: ResolvedPath, limits: Limits = DEFAULT_LIMITS
-) -> tuple[bytes, str]:
-    """Load a checked note's raw bytes and decoded text, as an edit needs them.
+def decode_note_bytes(raw: bytes, limits: Limits = DEFAULT_LIMITS) -> tuple[bytes, str]:
+    """Check raw note size and encoding, then remove BOM and normalize CRLF.
 
-    Args:
-        policy: The policy that checked `resolved`.
-        resolved: A file path returned by `policy.resolve`.
-        limits: Limits that set the largest readable file.
+    Filesystem and commit loaders use the same checks in the same order.
 
     Returns:
-        The raw bytes, and the text as the read tools see it: without a
-        leading BOM and with CRLF normalized to LF.
+        The original bytes and decoded text.
 
     Raises:
-        KnowledgeError: `FILE_TOO_LARGE`, `INVALID_ENCODING`, or the codes
-            `load_note` raises.
+        KnowledgeError: `FILE_TOO_LARGE` or `INVALID_ENCODING`.
     """
-    _, raw = _load_raw(policy, resolved, limits.max_file_bytes + 1)
     if len(raw) > limits.max_file_bytes:
         raise KnowledgeError(DomainErrorCode.FILE_TOO_LARGE)
     text = _decode_text(raw)
@@ -206,6 +196,26 @@ def read_note(
             `LINE_TOO_LONG` if the first requested line alone exceeds the
             content limit; or any code from the path checks and loading.
     """
+    read_end(request, limits)
+    resolved = policy.resolve(request.path, TargetKind.FILE)
+    note = load_note(policy, resolved, limits)
+    if note.unreadable_reason == "too_large":
+        raise KnowledgeError(DomainErrorCode.FILE_TOO_LARGE)
+    if note.lines is None or note.content_sha256 is None:
+        raise KnowledgeError(DomainErrorCode.INVALID_ENCODING)
+
+    return format_read(request, note.lines, note.content_sha256, limits)
+
+
+def read_end(request: ReadRequest, limits: Limits = DEFAULT_LIMITS) -> int:
+    """Check the requested range and return its inclusive last line.
+
+    Returns:
+        The explicit end or the end of the default range.
+
+    Raises:
+        KnowledgeError: `INVALID_ARGUMENT` beyond the range limit.
+    """
     start = request.start_line
     if request.end_line is None:
         requested_end = start + limits.default_read_lines - 1
@@ -214,25 +224,38 @@ def read_note(
     else:
         requested_end = request.end_line
 
-    resolved = policy.resolve(request.path, TargetKind.FILE)
-    note = load_note(policy, resolved, limits)
-    if note.unreadable_reason == "too_large":
-        raise KnowledgeError(DomainErrorCode.FILE_TOO_LARGE)
-    if note.lines is None or note.content_sha256 is None:
-        raise KnowledgeError(DomainErrorCode.INVALID_ENCODING)
+    return requested_end
 
-    lines = note.lines
+
+def format_read(
+    request: ReadRequest,
+    lines: tuple[str, ...],
+    content_sha256: str,
+    limits: Limits = DEFAULT_LIMITS,
+) -> ReadResult:
+    """Format loaded lines with the shared range and returned-content limits.
+
+    Returns:
+        Numbered content, range metadata, and the supplied raw-byte hash.
+
+    Raises:
+        KnowledgeError: `INVALID_ARGUMENT` for a range beyond the limit or
+            `LINE_TOO_LONG` when the first line exceeds the content limit.
+    """
+    start = request.start_line
+    requested_end = read_end(request, limits)
+
     total_lines = len(lines)
     if start > total_lines:
         return ReadResult(
-            path=resolved.relative_path,
+            path=request.path,
             numbered_content="",
             start_line=None,
             end_line=None,
             total_lines=total_lines,
             next_line=None,
             truncated=False,
-            content_sha256=note.content_sha256,
+            content_sha256=content_sha256,
         )
 
     # Add whole lines until the range ends or the next line would exceed the
@@ -255,14 +278,14 @@ def read_note(
         end = number
 
     return ReadResult(
-        path=resolved.relative_path,
+        path=request.path,
         numbered_content="".join(parts),
         start_line=start,
         end_line=end,
         total_lines=total_lines,
         next_line=end + 1 if end < total_lines else None,
         truncated=end < last_requested,
-        content_sha256=note.content_sha256,
+        content_sha256=content_sha256,
     )
 
 
@@ -303,37 +326,6 @@ def list_directory(
             for entry in entries[request.offset : page_end]
         ],
         next_offset=next_offset,
-        truncated=next_offset is not None,
-    )
-
-
-def note_info(
-    policy: PathPolicy, request: InfoRequest, limits: Limits = DEFAULT_LIMITS
-) -> InfoResult:
-    """Return metadata for a note, including one too large or invalid to read.
-
-    Args:
-        policy: The policy for the vault root.
-        request: The note path.
-        limits: Limits that set the largest readable file.
-
-    Returns:
-        The note's size, modification time, and, when readable, its line count
-        and hash.
-
-    Raises:
-        KnowledgeError: Any code from the path checks and loading.
-    """
-    resolved = policy.resolve(request.path, TargetKind.FILE)
-    note = load_note(policy, resolved, limits)
-    return InfoResult(
-        path=resolved.relative_path,
-        size_bytes=note.size_bytes,
-        modified_at=note.modified_at.isoformat().replace("+00:00", "Z"),
-        line_count=None if note.lines is None else len(note.lines),
-        content_sha256=note.content_sha256,
-        readable=note.unreadable_reason is None,
-        unreadable_reason=note.unreadable_reason,
     )
 
 

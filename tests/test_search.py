@@ -148,9 +148,7 @@ def test_literal_matches(notes: Path, query: str, hits: list[tuple[str, int]]) -
     """Phrases, punctuation, CJK, leading dashes, and spaces match literally."""
     result = _search(notes, query)
     assert _hits(result) == hits
-    assert result.mode == "literal"
     assert not result.truncated
-    assert not result.incomplete
 
 
 def test_query_is_not_split_into_words(notes: Path) -> None:
@@ -197,7 +195,6 @@ def test_no_match(notes: Path) -> None:
     result = _search(notes, "absent phrase")
     assert result.matches == []
     assert not result.truncated
-    assert not result.incomplete
     assert result.skipped.model_dump() == {
         "too_large": 0,
         "invalid_text": 0,
@@ -289,7 +286,6 @@ def test_result_limit_boundaries(
     result = _search(tmp_path, "hit", max_results=max_results)
     assert len(result.matches) == returned
     assert result.truncated is truncated
-    assert not result.incomplete
 
 
 def test_early_stop_while_input_is_still_being_sent(tmp_path: Path) -> None:
@@ -474,7 +470,7 @@ def test_equivalent_representations_match(
 
 
 def test_recursive_search_counts_skipped_notes(tmp_path: Path) -> None:
-    """Oversized and invalid notes are skipped, counted, and mark incomplete."""
+    """Oversized and invalid notes are skipped, counted, and reported."""
     limits = Limits(max_file_bytes=64)
     _write(tmp_path, "good.md", "hit\n")
     _write(tmp_path, "big.md", "hit\n" * 20)
@@ -482,7 +478,7 @@ def test_recursive_search_counts_skipped_notes(tmp_path: Path) -> None:
     _write(tmp_path, "nul.md", b"hit\x00\n")
     result = _search(tmp_path, "hit", limits=limits)
     assert _hits(result) == [("good.md", 1)]
-    assert result.incomplete
+    assert any(result.skipped.model_dump().values())
     assert not result.truncated
     assert result.skipped.model_dump() == {
         "too_large": 1,
@@ -532,7 +528,7 @@ def test_note_removed_before_loading_is_unreadable(
     _remove_before_loading(monkeypatch, tmp_path, "gone.md")
     result = _search(tmp_path, "hit")
     assert _hits(result) == [("kept.md", 1)]
-    assert result.incomplete
+    assert any(result.skipped.model_dump().values())
     assert result.skipped.unreadable == 1
 
 
@@ -559,7 +555,7 @@ def test_unreadable_note_and_directory_are_counted(tmp_path: Path) -> None:
         (tmp_path / "locked").chmod(0o755)
         locked_note.chmod(0o644)
     assert _hits(result) == [("kept.md", 1)]
-    assert result.incomplete
+    assert any(result.skipped.model_dump().values())
     assert result.skipped.unreadable == 2
 
 
@@ -587,7 +583,6 @@ def test_hidden_outside_and_symlinked_secrets_never_appear(private_vault: Path) 
     """Only visible notes are searched; excluded names are not revealed."""
     result = _search(private_vault, SECRET[:8])
     assert _hits(result) == [("visible.md", 1)]
-    assert not result.incomplete
     dumped = result.model_dump_json()
     assert SECRET not in dumped
     for name in ["hidden", "obsidian", "secret", "notes.txt", "link", "outside"]:

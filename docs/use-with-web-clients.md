@@ -40,8 +40,8 @@ distribution, also adjust the package installation, the Python path, and, if
 | Server unit | `/etc/systemd/system/knowledge-server.service`, from `deploy/` |
 | cloudflared unit and tunnel token | Created by `cloudflared service install`; the token is in a root-only file in `/etc/cloudflared` |
 | Vault checkout | `/srv/knowledge-vault`, owned by the administrator's account |
-| Inbox for write proposals (optional) | `/srv/knowledge-vault/inbox`, owned by the service account, and the unit drop-in `/etc/systemd/system/knowledge-server.service.d/inbox.conf` |
-| Review clone for proposals (optional) | `~/vault-review`, owned by the administrator's account, and the script `/opt/knowledge-server/deploy/review-proposals` |
+| Server's Git repository for write proposals (optional) | `/var/lib/knowledge-server/vault.git`, created by the server |
+| SSH key for write proposals (optional, private) | `/etc/knowledge-server/vault-remote-key`, owned by the service account, and the NAS host key in `/etc/knowledge-server/known_hosts` |
 | Synchronization | A line in the administrator's crontab |
 | Logs | `journalctl -u knowledge-server`, `journalctl -u cloudflared` |
 | Cloudflare and client settings | The Cloudflare dashboard, and the connector settings in ChatGPT and Claude.ai |
@@ -101,8 +101,7 @@ published route only after the server runs with the owner subject.
 ### Set up the vault checkout
 
 The server reads a dedicated checkout, `/srv/knowledge-vault`. Only the
-synchronization changes it, or a [review of proposals](#review-proposals) by
-hand; do not edit notes in it otherwise.
+synchronization changes it; do not edit or commit in it.
 
 1. Install Git and clone the vault remote with your account:
 
@@ -123,9 +122,8 @@ hand; do not edit notes in it otherwise.
    ```
 
    cron cannot enter a passphrase, so the SSH key for the vault remote must
-   work without one. A key that the NAS limits to reading is safer, unless
-   you [enable write proposals](#enable-write-proposals): then you push
-   merged proposals with this key, and it needs push access.
+   work without one. A key that the NAS limits to reading is safer. [Write
+   proposals](#enable-write-proposals) use a separate key.
 
 ### Install the server
 
@@ -261,83 +259,75 @@ Claude.ai instructions.
 ### Enable write proposals
 
 This step is optional. It lets the client save new notes and edits as
-proposals in `inbox/` under the root, which you then [review and
-merge](#review-proposals); the server never changes the notes themselves.
-The commands assume that the root is the whole checkout. For a subtree, the
-inbox is `<root>/inbox`, and the exclude line names its path in the
-checkout, such as `/<subtree>/inbox/`.
+proposals, branches of the vault remote, which you then [review and
+merge](#review-proposals) in any clone; the server never changes the notes
+themselves. The server creates the commits in a Git repository of its own,
+`/var/lib/knowledge-server/vault.git`, which it creates at startup, and
+pushes them with its own SSH key. The firewall must allow SSH from the VM to
+the NAS.
 
-Write proposals need a server version that has them. If the installed
-version is older, [update the server](#update-the-server) first: an older
-version rejects `write_proposals` and does not start.
+Write proposals need a server version that has proposal branches. If the
+installed version is older, [update the server](#update-the-server) first:
+an older version rejects `vault_remote` and does not start.
 
-1. Create the inbox, owned by the service account, and make Git ignore it:
-
-   ```sh
-   sudo install -d -o knowledge-server -g knowledge-server -m 0755 \
-     /srv/knowledge-vault/inbox
-   echo /inbox/ >> /srv/knowledge-vault/.git/info/exclude
-   git -C /srv/knowledge-vault status --short
-   ```
-
-   Expected result: `git status` shows no `inbox/` entry.
-2. Let the service write in the inbox and nowhere else, with a drop-in for
-   the unit:
+1. Create the server's SSH key. It has no passphrase, because the service
+   cannot enter one:
 
    ```sh
-   sudo install -d /etc/systemd/system/knowledge-server.service.d
-   printf '[Service]\nReadWritePaths=/srv/knowledge-vault/inbox\n' |
-     sudo tee /etc/systemd/system/knowledge-server.service.d/inbox.conf
-   sudo systemctl daemon-reload
+   sudo ssh-keygen -t ed25519 -N '' -C knowledge-server \
+     -f /etc/knowledge-server/vault-remote-key
+   sudo chown knowledge-server: /etc/knowledge-server/vault-remote-key
    ```
 
-3. Add `write_proposals = true` to `/etc/knowledge-server/config.toml` with
-   `sudoedit`, run `sudo systemctl restart knowledge-server`, and repeat the
-   `curl` check of [Install the server](#install-the-server) step 5. If it
-   fails, look for a `startup category=...` line in
-   `journalctl -u knowledge-server -n 20`, and see
-   [Troubleshooting](#troubleshooting). systemd restarts a failed server every
-   few seconds, so the unit can look active while it fails.
-4. Check what the running service can write:
+   Give the public key, `/etc/knowledge-server/vault-remote-key.pub`, push
+   access to the vault remote on the NAS.
+2. Copy the NAS host key that your account already trusts, so that the
+   server can check the NAS without asking:
 
    ```sh
-   pid=$(systemctl show --property MainPID --value knowledge-server)
-   sudo nsenter --target "$pid" --mount --setuid "$(id -u knowledge-server)" \
-     --setgid "$(id -g knowledge-server)" sh -c '
-       touch /srv/knowledge-vault/inbox/.check && echo "inbox: writable"
-       rm -f /srv/knowledge-vault/inbox/.check
-       touch /srv/knowledge-vault/.check'
+   ssh-keygen -F <nas-host> | sudo tee /etc/knowledge-server/known_hosts
    ```
 
-   Expected result: `inbox: writable`, and an error from `touch` that ends
-   in `Read-only file system`. `Permission denied` instead means that only
-   the file permissions protect the checkout: check that the unit has
-   `ProtectSystem=strict`.
-5. Set up the review clone, where you [review proposals](#review-proposals)
-   with `deploy/review-proposals`. Clone the vault remote with your account,
-   and put the script on your `PATH`:
+   If the NAS uses an SSH port other than 22, write the host as
+   `'[<nas-host>]:<port>'`. Expected result: at least one line with a key.
+   If there is none, connect to the NAS once with
+   `ssh <nas-user>@<nas-host>`, adding `-p <port>` for a port other than
+   22, check its fingerprint, and repeat.
+3. Check that the service account can reach the vault remote with the key,
+   the host key, and the SSH options that the server uses:
 
    ```sh
-   git clone ssh://<nas-user>@<nas-host>/<path-to-vault.git> ~/vault-review
-   mkdir -p ~/.local/bin
-   ln -s /opt/knowledge-server/deploy/review-proposals ~/.local/bin/
+   sudo -u knowledge-server env GIT_SSH_COMMAND='ssh -i /etc/knowledge-server/vault-remote-key -o IdentitiesOnly=yes -o BatchMode=yes -o UserKnownHostsFile=/etc/knowledge-server/known_hosts' \
+     git -C / ls-remote ssh://<nas-user>@<nas-host>/<path-to-vault.git> main
    ```
 
-   You push accepted proposals from this clone with the same key as the
-   synchronization, so that key needs push access. If Git has no commit
-   identity for your account, set `user.name` and `user.email` with
-   `git -C ~/vault-review config`. Ubuntu adds `~/.local/bin` to `PATH` at
-   the next login. The script uses `/srv/knowledge-vault` as the root
-   and `~/vault-review` as the review clone; for other paths, set
-   `KNOWLEDGE_ROOT` and `KNOWLEDGE_REVIEW_CLONE` in your shell profile.
-6. In ChatGPT or Claude.ai, check that the connector lists
-   `knowledge_propose_note` and `knowledge_propose_edit`; if it does not,
-   refresh the connector. Ask the client to save a short test note; it may
-   write without asking for confirmation, because you asked for the write.
-   Then accept or reject the test note as [Review
-   proposals](#review-proposals) describes.
+   Expected result: one line with a commit ID and `refs/heads/main`. An
+   error means that the key, the host key, or the URL is wrong. The check
+   shows only that the server can read the vault remote; the test note in
+   step 5 shows that it can push.
+4. Add this line to `/etc/knowledge-server/config.toml` with `sudoedit`,
+   with the URL of step 3:
 
-To disable writing, remove `write_proposals = true` and restart the server.
+   ```toml
+   vault_remote = "ssh://<nas-user>@<nas-host>/<path-to-vault.git>"
+   ```
+
+   The server accepts only this `ssh://` form, not the short form
+   `<nas-user>@<nas-host>:<path>`. Run
+   `sudo systemctl restart knowledge-server`, and repeat the `curl` check of
+   [Install the server](#install-the-server) step 5. If it fails, look for a
+   `startup category=...` line in `journalctl -u knowledge-server -n 20`,
+   and see [Troubleshooting](#troubleshooting). systemd restarts a failed
+   server every few seconds, so the unit can look active while it fails.
+5. In ChatGPT or Claude.ai, check that the connector lists
+   `knowledge_propose_note`, `knowledge_propose_edit`, and
+   `knowledge_list_proposals`; if it does not, refresh the connector. Ask the
+   client to save a short test note; it may write without asking for
+   confirmation, because you asked for the write. Then accept or reject the
+   test note as [Review proposals](#review-proposals) describes.
+
+To disable writing, remove the `vault_remote` line and restart the server.
+You can then delete `/var/lib/knowledge-server/vault.git`.
 
 ## Operate the services
 
@@ -378,125 +368,67 @@ git -C /srv/knowledge-vault fetch
 git -C /srv/knowledge-vault reset --hard '@{upstream}'
 ```
 
-**Warning:** The reset discards commits and changes that are only in the
-checkout, such as a proposal merged by hand that you have not pushed. Push
-them first, or merge them again after the reset. The reset keeps the inbox,
-because Git ignores it.
+**Warning:** The reset discards commits and changes that exist only in the
+checkout. Push them first, or make them again after the reset.
 
 ### Review proposals
 
-Agents save proposals in `/srv/knowledge-vault/inbox`. The proposal for the
-vault path `<note>` is `inbox/<note>`. An edit of an existing note also has
-a base copy, `inbox/.base/<note>`, of the version that it started from; a
-new note has none.
+Agents save each proposal as a branch of the vault remote, named
+`proposal/<topic>-<suffix>`; one proposal can change several notes. Review
+proposals in any clone of the vault remote, with Git in a terminal or an
+editor's Git view. The VM and the server take no part in the review. The
+commands use the example branch `proposal/sleep-notes-cleanup-3f9a`; replace
+it with the branch that you review.
 
-`review-proposals` applies the proposals to the review clone that you set
-up in [Enable write proposals](#enable-write-proposals), where you review
-them in VS Code over Remote-SSH, or in another editor with a Git view. The
-server never reads the review clone, so it serves no unreviewed text, and it
-keeps running during the review.
-
-1. In a terminal on the VM, for example the VS Code terminal, run:
+1. Update `main` and list the proposals:
 
    ```sh
-   review-proposals
+   git switch main
+   git pull --ff-only --prune
+   git branch -r --list 'origin/proposal/*'
    ```
 
-   Expected result: one line per proposal, with its path and `applied` or
-   the number of conflicts. `No proposals.` means that there is nothing to
-   review.
-2. Open `~/vault-review` in VS Code and go through each changed note in the
-   Source Control view:
-   - **Accept:** edit the note if necessary and save it, then stage the
-     note or the changes that you accept, check them under **Staged
-     Changes**, and commit. Staging records the note as it is at that
-     moment; stage it again after a later edit.
-   - **Reject:** discard the changes. For a new note, this deletes the file.
-     Unstage staged changes first.
-   - **Later:** leave the changes uncommitted.
+   To see the agent's summary of each change in a proposal, run
+   `git log main..origin/proposal/sleep-notes-cleanup-3f9a`. Each commit
+   message is `Unreviewed proposal:` followed by that summary.
 
-   Conflicts are between `<<<<<<< current` (the vault's version) and
-   `>>>>>>> proposal` (the agent's version), separated by `=======`. Resolve
-   them before you commit; a hook that the script installs refuses commits
-   that contain these markers. If the summary says
-   `note added in the vault since the proposal`, the whole note is one
-   conflict between the two versions. If it says
-   `note deleted in the vault since the proposal`, the note comes back as a
-   new file: commit it to restore the note, or discard it.
-3. Push the commits with **Sync Changes**. If the push is refused because
-   the remote has new commits, first commit or discard the remaining
-   changes, and then sync again. A discard loses your corrections, but the
-   original proposal stays in the inbox.
-4. Save all files (**File -> Save All**), so that no unsaved edit is
-   missing, then run:
+2. Merge the proposal without committing it:
 
    ```sh
-   review-proposals --done
+   git merge --no-ff --no-commit origin/proposal/sleep-notes-cleanup-3f9a
    ```
 
-   The command checks that your commits reached the branch that the local
-   vault checkout follows. If notes still have uncommitted changes, it lists
-   them and asks whether to keep their proposals for later; yes discards
-   your changes to those notes. Then it stops the server, deletes the
-   finished proposals with their base copies, and starts the server.
-   Expected result: `Deleted <n> proposals.` and `Started knowledge-server.`
-   A proposal that changed during the review stays in the inbox for the
-   next review.
-
-The next synchronization brings the merged notes to the local vault
-checkout. If a command is interrupted, run it again:
-`review-proposals --done` continues where it stopped, and
-`review-proposals` offers to discard a partial application and apply the
-proposals again. Neither deletes a proposal that it did not finish.
-
-**Review by hand.** Without the script, merge in the local vault checkout.
-Stop the server while you review, so that no write can change a proposal
-during the merge. Remote tool calls fail until you start it again.
-
-1. Stop the server and update the checkout:
+   The proposed changes are now staged. Review them, for example with
+   `git diff --cached` or in the editor's Git view, edit the notes as
+   necessary, and stage your edits with `git add`. Resolve conflicts as in
+   any merge. To reject the proposal, run `git merge --abort` and continue
+   with step 4.
+3. Commit the merge and push it:
 
    ```sh
-   sudo systemctl stop knowledge-server
-   cd /srv/knowledge-vault
-   git pull --ff-only
-   find inbox -type f -iname '*.md' -not -path 'inbox/.base/*'
-   ```
-
-2. For each proposal that you accept, put it into the note:
-   - **An edit** (it has a base copy): merge it with changes that reached the
-     note since the proposal was made:
-
-     ```sh
-     git merge-file <note> inbox/.base/<note> inbox/<note>
-     ```
-
-     Expected result: exit status 0. A positive status is the number of
-     conflicts; resolve the conflict markers in `<note>` by hand.
-   - **A new note**: if `<note>` does not exist yet, copy it:
-
-     ```sh
-     test ! -e <note> && install -D -m 0644 inbox/<note> <note>
-     ```
-
-     If `<note>` exists, a note was added at that path since the proposal was
-     made; combine the two by hand.
-3. Review the changes with `git diff` and `git status`, then commit and push:
-
-   ```sh
-   git add <note>
-   git commit -m '<message>'
+   git commit
    git push
    ```
 
-   If the push is rejected because the remote has new commits, run
-   `git pull --rebase` and push again.
-4. Delete each proposal that you merged or rejected, with its base copy, and
-   start the server:
+   If the push is refused because `main` has new commits, run
+   `git pull --no-rebase` and push again. A rebase would drop your merge
+   commit and replay the proposal's own commits. The next synchronization
+   brings the merged notes to the local vault checkout.
+4. Delete the branch, after a merge or to reject the proposal:
 
    ```sh
-   sudo rm -f inbox/<note> inbox/.base/<note>
-   sudo systemctl start knowledge-server
+   git push origin --delete proposal/sleep-notes-cleanup-3f9a
    ```
+
+   An agent can revise a branch while you review it, and the deletion
+   discards such a revision. Before you delete a merged branch, you can
+   check with `git fetch` and
+   `git log --oneline main..origin/proposal/sleep-notes-cleanup-3f9a`: no
+   output means that `main` has every commit of the branch.
+
+The deleted branch no longer appears as a proposal, but its text stays in
+the history of the vault remote, its backups, and the clones that fetched
+it.
 
 ### Update the server
 
@@ -533,8 +465,9 @@ git -C /opt/knowledge-server checkout <recorded-revision>
 If the update changed the unit file, install it again from the checked-out
 revision and run `sudo systemctl daemon-reload`; if you changed the
 configuration for the update, undo that change. Then restart and check as
-for an update. The server keeps no index or other state, so a rollback needs
-no data migration. The checkout now stays at that revision; at the next
+for an update. The server keeps no index, and its Git repository for
+proposals holds nothing that the vault remote lacks, so a rollback needs no
+data migration. The checkout now stays at that revision; at the next
 update, run `git -C /opt/knowledge-server switch main` before the pull.
 
 ### Credentials and private settings
@@ -543,7 +476,11 @@ update, run `git -C /opt/knowledge-server switch main` before the pull.
   replace it, rotate it in the dashboard, run
   `sudo cloudflared service uninstall`, and then run the new installation
   command; `service install` does not replace an existing service.
-- **Vault remote key.** It is in your `~/.ssh`.
+- **Your vault remote key.** The synchronization uses it; it is in your
+  `~/.ssh`.
+- **The server's vault remote key.** It is in
+  `/etc/knowledge-server/vault-remote-key`, readable only by the service
+  account. To revoke it, remove its public key from the NAS.
 - **Access values.** The values in `/etc/knowledge-server/config.toml` are
   private identifiers, not credentials. To change them, edit the file with
   `sudoedit`, restart the server, and repeat the `curl` check of [Install the
@@ -557,7 +494,8 @@ No OAuth token is stored in the VM.
 
 | Symptom | Check |
 |---|---|
-| `startup category=...` in the server log | The [log policy](http-contract.md#logging) names the cause. `writable-root` means the server was started outside its unit, for example by hand from your account. `configuration` right after you add `write_proposals` means that the installed version is older than write proposals; [update the server](#update-the-server). `inbox` means that `write_proposals = true`, but the inbox is missing, is not owned by the service account, or the [drop-in](#enable-write-proposals) is not loaded. |
+| `startup category=...` in the server log | The [log policy](http-contract.md#logging) names the cause. `writable-root` means the server was started outside its unit, for example by hand from your account. `configuration` right after you enable write proposals means that `vault_remote` is not in the `ssh://` form, or that the installed version is older than proposal branches; [update the server](#update-the-server). `vault-remote` means that the server could not prepare its own Git repository: check that the installed unit has `StateDirectory=knowledge-server` and that the service account can read the vault checkout, including its `.git` directory. |
+| A proposal tool returns `GIT_FAILED` | Repeat the check of [Enable write proposals](#enable-write-proposals) step 3, and check that the NAS gives the key push access. If both are right, the server's own repository may be damaged, for example after a full disk. Run `sudo systemctl stop knowledge-server`, `sudo rm -r /var/lib/knowledge-server`, and `sudo systemctl start knowledge-server`; the start rebuilds the repository. Proposals that were pushed are on the vault remote and stay unchanged. |
 | 401 with `event category=key-fetch-failed` | The VM cannot reach `https://<team>.cloudflareaccess.com`. After a failure, the server waits 30 seconds before it fetches again. |
 | 401 with only `event category=assertion-rejected` | `team_domain`, `audience`, or `owner_subject` does not match the Access application, or another identity sent the request. |
 | 421 | **HTTP Host Header** in the tunnel route is not `public_host`. |
@@ -575,9 +513,11 @@ sample notes from the installed checkout:
 
 1. With `sudoedit /etc/knowledge-server/config.toml`, set
    `mode = "synthetic"` and
-   `root = "/opt/knowledge-server/tests/fixtures/vault"`, and run
+   `root = "/opt/knowledge-server/tests/fixtures/vault"`, comment out any
+   `vault_remote` line, which only vault mode accepts, and run
    `sudo systemctl restart knowledge-server`.
 2. Ask the client: "Which CPU does my NAS use? Cite the note and line."
    Expected result: "AMD Ryzen 5 2600X", citing
    `infrastructure/nas-configuration.md`, line 7.
-3. Set `mode` and `root` back to their vault values and restart.
+3. Set `mode` and `root` back to their vault values, restore any
+   `vault_remote` line, and restart.

@@ -10,17 +10,16 @@ together. It is an introduction for developers who are new to the code. The
 knowledge-server lets an AI agent use a personal collection of Markdown notes.
 The agent's host application (the MCP host) starts the server and calls its
 tools. The agent can search the notes for a phrase, read a range of lines from
-a note, list a directory, and get information about a note. Results name
-notes and directories by their path in the vault, so the agent can cite its
-source.
+a note, and list a directory. Results name notes and directories by their
+path in the vault, so the agent can cite its source.
 
-The server reads files from the local vault checkout and nothing else. It
-never changes a note, never runs Git commands or searches Git history, and
-never runs code or follows links found inside a note. Note text is data that
-the server returns, not instructions for the server. Over HTTP, when its
-configuration enables them, two write tools save new notes and edits as
-proposals in the inbox, `inbox/` under the root; the vault owner reviews and
-merges them.
+The server reads notes from the local vault checkout. It never changes a
+note, never searches Git history, and never runs code or follows links found
+inside a note. Note text is data that the server returns, not instructions
+for the server. Over HTTP, when its configuration enables them, three more
+tools let an agent propose a new note or an edit, and list the pending
+proposals. Each proposal is a Git branch of the vault remote, which the vault
+owner reviews and merges into `main`.
 
 ## The big picture
 
@@ -42,9 +41,10 @@ MCP adapter
     v
 Knowledge core
     core/paths.py      - which paths are visible
-    core/reader.py     - read, list, info, and the shared note loader
+    core/reader.py     - read, list, and the shared note loader
     core/search.py     - literal search through ripgrep
-    core/writer.py     - write proposals in the inbox
+    core/writer.py     - write proposals
+    core/git.py        - Git work for proposals: commits, pushes, listing
     core/models.py, core/limits.py - shared data types and limits
     |
     v
@@ -66,9 +66,10 @@ The layers are separate for these reasons:
   how much text is returned, and which error applies are decided in the core.
   The adapter only translates between MCP messages and core calls. Because of
   this, all tools follow the same rules.
-- **The vault is only read.** The server writes only in the inbox. The vault
-  owner synchronizes the local vault checkout with Git and merges proposals
-  outside the server.
+- **The vault is only read.** For proposals, the server writes only in a
+  Git repository of its own, from which it pushes proposal branches. The
+  vault owner synchronizes the local vault checkout with Git and merges
+  proposals outside the server.
 
 ## Components
 
@@ -106,13 +107,9 @@ rejected; the [contract](tool-contract.md#configuration-and-common-policy)
 lists the exact rules. Visibility is separate from readability: a listed note
 can still be too large or not valid text.
 
-### Read, list, info, and the shared loader: `core/reader.py`
+### Read, list, and the shared loader: `core/reader.py`
 
-`read_note()`, `list_directory()`, and `note_info()` implement three of the
-four tools. For a note that is too large or is not valid text, `note_info()`
-returns `readable=false` with the reason instead of an error; other failures,
-such as a permission error, are still errors
-([`knowledge_info`](tool-contract.md#knowledge_info)).
+`read_note()` and `list_directory()` implement two of the three read tools.
 
 `load_note()` is the shared bounded loader. It opens each path component
 relative to its parent without following symlinks, so a symlink or FIFO
@@ -122,24 +119,35 @@ same checks through `load_note_text()`, which also counts each chunk against
 the search's byte budget and deadline. Because both use the same code, search
 and read accept the same notes.
 
-### Write proposals: `core/writer.py`
+### Write proposals: `core/writer.py` and `core/git.py`
 
-`propose_note()` and `propose_edit()` implement the two write tools. They
-check paths with `PathPolicy`: `probe_file()` checks a path that need not
-exist yet, and `resolve()` checks the note that an edit starts from, which
-`load_note_bytes()` then loads with the shared loader. The proposal for the
-vault path `P` is `inbox/P`. The first edit of a vault note also writes a
-base copy of its bytes to `inbox/.base/P`, which the vault owner merges
-against; the hidden-name rule keeps it out of every tool.
+`propose_note()` and `propose_edit()` implement the two write tools.
+`ProposalBranches` in `core/git.py` does their Git work and also lists
+proposals and reads notes from a branch. It works in the server's own bare
+Git repository, `/var/lib/knowledge-server/vault.git` under the service unit,
+which the launcher creates if it is missing. The server may only read the
+local vault checkout and so cannot commit there. Instead, at startup and
+before each new proposal, it copies the checkout's commits into its own
+repository with a local `git fetch`. The repository holds a copy of every
+object it uses, so garbage collection in the checkout cannot remove them.
+
+Each write needs a commit to start from. A new proposal starts from the
+commit that the local vault checkout has checked out (`HEAD`). A revision
+starts from the newest commit of its proposal branch, which the server first
+fetches from the vault remote. `ProposalBranches` checks the path with
+`PathPolicy.parse()`, checks each entry on the path in that commit, and loads
+a note with the size and encoding checks of the shared loader.
 
 An edit applies exact text replacements to the note's text as the read tools
-see it, and writes the result back with the note's BOM and line endings.
-Each file is written as a hidden temporary file and then moved into place,
-through directory descriptors opened without following symlinks. One lock
-serializes all writes of the process, so a hash check and the write that
-depends on it cannot interleave with another write. The
-[contract](tool-contract.md#write-proposals) gives the rules and their
-order.
+see it, and keeps the note's BOM and line endings. The writer then builds a
+tree in a temporary index, creates the commit with the agent's summary in its
+message, and pushes it with a lease: a new branch only if no branch of that
+name exists, and a revision only if the branch tip has not moved. One lock
+serializes all proposal operations of the process, including the fetches of
+listing and reading, because they update the same refs. Git runs as a
+subprocess with bounded output, deadlines, and no user or system
+configuration. The [contract](tool-contract.md#write-proposals) gives the
+rules and their order.
 
 ### Literal search: `core/search.py`
 
@@ -179,14 +187,14 @@ message to stderr and exits with status 1; otherwise it serves the tools over
 stdio until the host closes stdin. Logs go to stderr, so stdout carries only
 MCP messages.
 
-`create_server()` in `adapter/server.py` registers the four read tools on an
-SDK `MCPServer`, and the two write tools when its caller enables them; only
-the HTTP launcher does. The request and result models' schemas become the
-input and output schemas. For each call, the request model validates the raw
-arguments, and the tool calls one core function. Read, list, info, and the
-write tools run in a worker thread;
-search is awaited directly, so cancelling the request kills its ripgrep
-process. A `KnowledgeError` becomes a tool error with the code and message
+`create_server()` in `adapter/server.py` registers the three read tools on an
+SDK `MCPServer`, and the three proposal tools when its caller passes the vault
+remote; only the HTTP launcher does. The request and result models' schemas
+become the input and output schemas. For each call, the request model validates
+the raw arguments, and the tool calls one core function. Read, list, and the
+proposal tools run in a worker thread. Search is awaited directly, so cancelling
+the request kills its ripgrep process. A `KnowledgeError` becomes a tool error
+with the code and message
 ([format](tool-contract.md#error-and-change-behavior)). Any other exception
 becomes `INTERNAL_ERROR`, and the log names only the exception type and source
 location, because the exception's message can contain note text or paths.
@@ -252,16 +260,8 @@ The code is in `adapter/`:
 `deploy/` holds the server's systemd unit, which runs it as a dedicated account
 with a read-only view of the file system, and an example configuration. The
 [guide for web clients](use-with-web-clients.md) installs them with cloudflared
-and the vault synchronization. For write proposals, it adds a drop-in that
-makes only the inbox writable.
-
-`deploy/review-proposals` is a Bash script that the vault owner runs, not
-part of the server. It applies the proposals to a separate clone of the vault
-remote, which the server never reads, for review in an editor's Git view.
-Afterwards it stops the server briefly and deletes the reviewed proposals
-whose hashes still match the applied text. The [guide for web
-clients](use-with-web-clients.md#review-proposals) gives the procedure, and
-`tests/test_review_proposals.py` runs it on invented notes.
+and the vault synchronization. The unit gives the server one state
+directory, `/var/lib/knowledge-server`, for its repository for proposals.
 
 ## Trust boundaries
 
@@ -328,10 +328,11 @@ Passing one check does not skip the next:
    tool's request model, so the core receives a typed request and never sees
    HTTP headers, tokens, or raw MCP arguments.
 4. **Files.** A valid request still gets no general file access. The core
-   offers only the four read operations and the two proposal writes, which
-   write only in the inbox. `PathPolicy` decides which paths are visible,
-   and `reader.py`, `search.py`, and `writer.py` enforce the content and
-   resource limits. The service unit limits writes to the inbox as well.
+   offers only the three read operations and the proposal operations.
+   `PathPolicy` decides which paths are visible, also in proposal commits,
+   and `reader.py`, `search.py`, `writer.py`, and `git.py` enforce the
+   content and resource limits. The service unit limits writes to the
+   server's own directory, `/var/lib/knowledge-server`.
 
 On the stdio route, the vault owner's MCP host starts the server, so there is
 no authentication; argument validation and the file limits are the same as

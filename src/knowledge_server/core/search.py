@@ -147,7 +147,6 @@ async def search_notes(
     return SearchResult(
         matches=matches[: request.max_results],
         truncated=len(matches) > request.max_results,
-        incomplete=any(corpus.skipped.values()),
         skipped=skipped,
     )
 

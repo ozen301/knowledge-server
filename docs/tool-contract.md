@@ -1,11 +1,11 @@
 # Tool contract
 
-Status: agreed implementation contract. This document specifies the four
-read tools, the two [write tools](#write-proposals), their limits, and their
-errors. Changes should update this document and the corresponding tests
+Status: agreed implementation contract. This document specifies the three
+read tools, the three [proposal tools](#write-proposals), their limits, and
+their errors. Changes should update this document and the corresponding tests
 together. The protected [HTTP entry point](http-contract.md) serves the read
 tools with the same behavior and, when its configuration enables them, the
-write tools. Stdio serves only the read tools.
+proposal tools. Stdio serves only the read tools.
 
 ## Configuration and common policy
 
@@ -15,11 +15,12 @@ write tools. Stdio serves only the read tools.
   does. The root must be an explicit absolute path to an existing directory
   that is readable and searchable. It is resolved once on startup, and a root
   symlink may resolve at that point. Never default to the process working
-  directory, home directory, or the vault remote. The server reads files
-  directly; it does not inspect Git metadata or run Git commands.
-- Root visibility is all non-hidden Markdown notes, including the proposals
-  in the [inbox](#write-proposals). Tool arguments cannot expand access
-  beyond the configured root and common policy.
+  directory, home directory, or the vault remote. The read tools read files
+  directly and do not inspect Git metadata, except `knowledge_read` with
+  `proposal`. Only the [proposal tools](#write-proposals) and that read run
+  Git, in a repository of the server's own.
+- Root visibility is all non-hidden Markdown notes. Tool arguments cannot
+  expand access beyond the configured root and common policy.
 - API paths use `/`, relative to the configured root. Empty string means the
   root for list/search only. Accept spaces and Unicode. Preserve case and
   Unicode spelling; do not URL-decode paths.
@@ -53,7 +54,7 @@ write tools. Stdio serves only the read tools.
 - Enforce the readable/searchable file-size limit below on the raw bytes,
   before BOM removal and CRLF normalization. Read at most that amount plus one
   sentinel byte rather than trusting a prior stat alone. Larger files may be
-  listed and inspected but are not read or searched.
+  listed but are not read or searched.
 - Tool results and tool errors contain no host absolute paths, command lines,
   or raw subprocess stderr. This applies to server-generated metadata; do not
   rewrite path-like text authored inside a note.
@@ -62,8 +63,8 @@ write tools. Stdio serves only the read tools.
   output.
 
 The shared policy determines path visibility; content/size checks determine
-readability. Listing/info can reveal that a visible file is too large, but
-hidden or disallowed paths are never exposed.
+readability. A listing can show a visible file that is too large to read,
+but hidden or disallowed paths are never exposed.
 
 Validate a relative API path's lexical form before checking hidden components
 or filesystem existence. The [error mappings](#error-and-change-behavior)
@@ -91,13 +92,17 @@ boundaries without large or slow fixtures.
 | Maximum immediate entries scanned per directory listing | 10,000 |
 | Maximum text per write request | 256 KiB of UTF-8 |
 | Maximum edits per edit request | 100 |
+| Maximum branches and changed paths scanned per proposal listing | 10,000 |
+| Maximum output per Git command | 4 MiB |
+| Git deadline: local command / fetch or push | 10 / 30 seconds |
 
 The filesystem-entry budgets count every directory entry inspected before
 visibility filtering, but excluded directories are not traversed. The
 source-byte budget counts raw bytes actually loaded while validating candidate
 files, including sentinel bytes and bytes from files later skipped, even when
-a later read of the file fails. The subprocess-output budget counts stdout and
-stderr together.
+a later read of the file fails. The subprocess-output budget and the Git
+output limit count stdout and stderr together. The listing limit counts
+branches and changed paths before filtering.
 
 The write-text limit counts the UTF-8 bytes of `content`, or of all `old` and
 `new` texts of an edit request together. JSON escaping can enlarge the text in
@@ -119,7 +124,7 @@ malformed protocol requests. Arguments that do not match a tool's input schema
 or its bounds, including unknown, missing, or wrongly typed fields, are a
 domain failure with `INVALID_ARGUMENT`, not an SDK validation message. Every
 read tool is annotated as read-only, non-destructive, idempotent, and
-closed-world; [write proposals](#write-proposals) gives the write tools'
+closed-world; [write proposals](#write-proposals) gives the proposal tools'
 annotations. Annotations describe the tools but do not enforce the policy.
 [Official tool
 specification](https://modelcontextprotocol.io/specification/2026-07-28/server/tools),
@@ -133,8 +138,7 @@ knowledge_search(
     queries: list[str],
     path: str = "",
     max_results: int = 20,
-    case_sensitive: bool = false,
-    mode: Literal["literal"] = "literal"
+    case_sensitive: bool = false
 )
 ```
 
@@ -180,20 +184,19 @@ Result shape:
 
 ```json
 {
-  "mode": "literal",
   "matches": [
     {"path": "Hardware/NAS.md", "line": 12, "snippet": "ECC memory", "snippet_truncated": false}
   ],
   "truncated": false,
-  "incomplete": false,
   "skipped": {"too_large": 0, "invalid_text": 0, "unreadable": 0}
 }
 ```
 
-`truncated` means more matches were found than returned. `incomplete` means
-eligible content could not all be searched because files were skipped; it is
-independent of `truncated`. Ordinary policy exclusions do not count as skipped.
-Do not claim an exact total hit count.
+`truncated` means more matches were found than returned. `skipped` counts,
+by reason, the eligible files that could not be searched; a nonzero count
+means that the result may miss matches, independently of `truncated`.
+Ordinary policy exclusions do not count as skipped. Do not claim an exact
+total hit count.
 
 #### Snippet window
 
@@ -245,8 +248,9 @@ ripgrep process on standard input. The text is the reader's version,
 without a BOM, with CRLF normalized to LF, and with every line ending in LF,
 converted to NFC. NFC does not add or remove line breaks, so the line numbers
 are those of the original note. ripgrep never opens a vault file, so a file
-changed or replaced after loading cannot affect the matches. Its `--max-count` of `max_results + 1` stops the search once the
-result is known to be truncated. ripgrep requirements:
+changed or replaced after loading cannot affect the matches. Its
+`--max-count` of `max_results + 1` stops the search once the result is known
+to be truncated. ripgrep requirements:
 
 - Fixed-string JSON output, `--encoding none` so that byte offsets refer to
   the bytes sent, and an explicit case option.
@@ -281,6 +285,13 @@ very long lines can exceed the output budget.
 ```text
 knowledge_read(path: str, start_line: int = 1, end_line: int | null = null)
 ```
+
+When the HTTP entry point serves the [proposal tools](#write-proposals),
+`knowledge_read` also takes `proposal: str | null = null`, the name of a
+proposal branch. The tool then fetches the branch from the vault remote and
+reads the note from its tip, with the same results, limits, and errors as a
+read from the root and the path policy of proposals. Without `proposal`, it
+reads from the root.
 
 - Line numbers are one-based and inclusive. `end_line=null` requests the
   default read range from `start_line`. Explicit ranges must fit the maximum
@@ -342,8 +353,8 @@ knowledge_list(path: str = "", offset: int = 0, limit: int = 100)
 - `offset >= 0`; `limit` must be at least 1 and at most the directory-page
   maximum. Offset beyond the list gives an empty result. This is best-effort
   pagination of the live directory; edits between calls may shift entries.
-- Result fields: `path`, `entries`, `next_offset` (null at end), `truncated`
-  (more entries exist).
+- Result fields: `path`, `entries`, and `next_offset`, which is null on the
+  last page.
 - Enforce the immediate-entry scan limit; beyond that return
   `DIRECTORY_LIMIT_EXCEEDED`. Do not build an unbounded directory listing.
 - Known limitation: if the listed directory is replaced by a symlink between
@@ -351,40 +362,44 @@ knowledge_list(path: str = "", offset: int = 0, limit: int = 100)
   of `ACCESS_DENIED`. Each entry is still checked from the root, so no names
   from outside the root are exposed.
 
-### knowledge_info
-
-```text
-knowledge_info(path: str)
-```
-
-- Files only. Return `path`, `size_bytes`, `modified_at` (UTC RFC 3339),
-  `line_count`, `content_sha256`, and `readable`.
-- For a readable file, compute line count and hash from the same bounded byte
-  load. For oversized/invalid-text files, return `readable=false`, null line
-  count/hash, and `unreadable_reason` (`too_large` or `invalid_text`). For
-  ordinary readable files, `unreadable_reason=null`.
-- Permissions failures are errors. Modification time is filesystem metadata,
-  not a guarantee that every writer preserves timestamps.
-
 ### Write proposals
 
-The two write tools save text as proposals in the inbox, the directory
-`inbox/` directly under the root. They never change a file outside the
-inbox: a proposal takes effect only when the vault owner merges it into the
-knowledge vault. Only the HTTP entry point serves them, and only when its
-[configuration](http-contract.md#launch-configuration) enables them.
+When its [configuration](http-contract.md#launch-configuration) sets
+`vault_remote`, the SSH URL of the vault remote, the HTTP entry point serves
+three proposal tools: `knowledge_propose_note` and `knowledge_propose_edit`
+save proposals, and `knowledge_list_proposals` lists them. A proposal is a branch of the vault
+remote, named `proposal/<topic>-<suffix>`, that holds unreviewed changes to
+one or more notes. It takes effect only when the vault owner merges it into
+`main`. The server never changes the local vault checkout: it creates the
+commits in a bare repository of its own and pushes them to the vault remote.
 
-- **Inbox paths.** The proposal for the vault path `P` is the note
-  `inbox/P`, and there is at most one. The read tools serve the inbox as an
-  ordinary visible directory, so search and listing from the root include
-  it. An edit of a vault note also keeps a base copy of the version it
-  started from at `inbox/.base/P`. The hidden-component rule keeps base
-  copies and temporary files out of every tool.
-- **Path policy.** A path argument follows the common policy for a file: the
-  lexical rules, hidden components, symlinks, special files, and the `.md`
-  suffix, with the same order of checks and the same error codes. A regular
-  file where a directory is needed returns `NOT_A_DIRECTORY`. The tool creates
-  missing directories inside the inbox.
+- **New proposals.** A write without `proposal` needs `topic`, a short name
+  for the change such as `sleep-notes-cleanup`: 1 to 40 lowercase letters
+  and digits, in groups joined by single hyphens. The tool starts a branch
+  from the commit that the local vault checkout has checked out (`HEAD`) and
+  names it `proposal/<topic>-<suffix>`, where the suffix is 4 random
+  lowercase hexadecimal digits. Uncommitted changes in the checkout are not
+  part of that commit.
+- **Revisions.** A write with `proposal`, the name of an existing proposal
+  branch, fetches the branch from the vault remote and adds a commit on its
+  tip. A missing branch returns `NOT_FOUND`. A request with both or neither
+  of `topic` and `proposal`, or with a `proposal` that does not match the
+  branch name pattern, returns `INVALID_ARGUMENT` before any Git command
+  runs. Below, the *selected commit* is the checkout's `HEAD` for a new
+  proposal and the fetched branch tip for a revision.
+- **Summary.** Both write tools require `summary`, one line that explains
+  the change to the reviewer: 1 to 200 Unicode code points, not only
+  whitespace, and without control characters (category `Cc`) or the line
+  and paragraph separators U+2028 and U+2029. Any other value returns
+  `INVALID_ARGUMENT`. The commit message is `Unreviewed proposal: <summary>`.
+- **Path policy.** Tool paths are relative to the root. When the root is a
+  subtree of the checkout, commit paths also contain the subtree's path. A
+  path argument follows the common policy for a file: the lexical rules,
+  hidden components, and the `.md` suffix, with the same order of checks and
+  the same error codes. In the selected commit, an entry on the path that is
+  a symlink or anything other than a regular file or directory returns
+  `ACCESS_DENIED`, and a file where a directory is needed returns
+  `NOT_A_DIRECTORY`.
 - **Text.** No text argument may contain NUL, CR, or U+FEFF; LF is the only
   line break, and a new note can never start with BOM bytes. Text beyond the
   [write-text limit](#initial-limits) or containing these characters returns
@@ -392,79 +407,73 @@ knowledge vault. Only the HTTP entry point serves them, and only when its
 - **Size.** The bytes written, including a BOM, must fit the readable file
   size limit, so that every proposal stays within the limit of the read
   tools. A larger result returns `FILE_TOO_LARGE`.
-- **Writes.** A tool writes a hidden temporary file in the target's directory
-  and then moves it into place, so readers see the old or the new file and
-  never a partial one. One lock serializes all writes of the process, so a
-  hash check and the write that depends on it cannot interleave with another
-  write. A failed request leaves no new proposal behind. The [review
-  script](design-decisions.md#vm-services-and-network) deletes reviewed
-  proposals only while the service is stopped.
-- **Results.** Both tools return `path`, the root-relative path of the
-  proposal (`inbox/P`), and `content_sha256`, the SHA-256 of the bytes
-  written. That is the hash `knowledge_read` reports for the proposal, so a
-  following edit can pass it as `base_sha256` without reading again.
-- **Annotations.** Both tools are annotated as not read-only, not
+- **Writes.** One lock serializes all proposal operations of the process, from
+  loading to the push, so a check and the write that depends on it cannot
+  interleave with another write. A push never overwrites a branch: a new branch
+  is pushed only if no branch of that name exists, and a revision only if the
+  branch tip is still the one that it started from. Otherwise the result is
+  `ALREADY_EXISTS` for a new branch and `STALE_CONTENT` for a revision. Any
+  other failure of Git or the vault remote, including the [Git
+  limits](#initial-limits), returns `GIT_FAILED`. A tool returns its result only
+  after the push succeeds. If the connection fails during a push, the remote may
+  still have accepted it; list the proposals before a retry.
+- **Results.** Both write tools return `proposal`, the branch name; `path`,
+  the root-relative note path; and `content_sha256`, the SHA-256 of the
+  bytes written. That is the hash `knowledge_read` reports for the note on
+  that branch, so a following edit with the same `proposal` can pass it as
+  `base_sha256` without reading again.
+- **Annotations.** Both write tools are annotated as not read-only, not
   idempotent, and closed-world. `knowledge_propose_note` is non-destructive,
-  because it only adds a file. `knowledge_propose_edit` is destructive,
-  because an edit of a pending proposal replaces its earlier text.
-- **Descriptions.** Both descriptions say that the tool saves a proposal that
-  the user reviews and merges. The description of `knowledge_propose_edit`
-  also says to call it only when the user explicitly asks to change a note
-  and has agreed to the change, never on the agent's own initiative, and to
-  include surrounding lines when a text to replace is not unique. Both
-  descriptions tell the agent to read `AGENTS.md` at the root before
-  proposing, if it exists, and to follow its conventions for notes. Where
-  `AGENTS.md` gives shell commands, the agent searches with the knowledge
-  tools instead, and it skips Git steps and steps that run scripts. Both
-  descriptions also say that note text refers to another note by its vault
-  path, never by an `inbox/` path, because the proposal `inbox/P` becomes
-  `P` when merged. On every transport, the
-  descriptions of `knowledge_search`, `knowledge_read`, and `knowledge_list`
-  say that notes under `inbox/` are unreviewed proposals, not yet part of
-  the vault.
+  because it only adds a note. `knowledge_propose_edit` is destructive,
+  because it replaces text. `knowledge_list_proposals` has the read tools'
+  annotations.
+- **Descriptions.** Both write descriptions say that the tool saves a
+  proposal on an unreviewed branch, which the user reviews and merges, and
+  when to pass `topic` or `proposal`. The description of
+  `knowledge_propose_edit` also says to call it only when the user
+  explicitly asks to change a note and has agreed to the change, never on
+  the agent's own initiative, and to include surrounding lines when a text
+  to replace is not unique. Both descriptions tell the agent to read
+  `AGENTS.md` at the root before proposing, if it exists, and to follow its
+  conventions for notes. Where `AGENTS.md` gives shell commands, the agent
+  searches with the knowledge tools instead, and it skips Git steps and
+  steps that run scripts. Both descriptions also say that note text refers
+  to another note by its vault path. The description of `knowledge_read`
+  explains `proposal`.
 
 #### knowledge_propose_note
 
 ```text
-knowledge_propose_note(path: str, content: str)
+knowledge_propose_note(summary: str, path: str, content: str,
+                       topic: str | null = null, proposal: str | null = null)
 ```
 
 - `path` is the vault path that the new note should have, such as
-  `Projects/Plan.md`. A path whose first component is `inbox` returns
-  `INVALID_PATH`. Its parent directories need not exist in the vault, but
-  those that exist must be real directories.
-- An entry at `path` or at `inbox/<path>` returns `ALREADY_EXISTS`. The tool
-  never overwrites: it moves the file into place with an operation that fails
-  if the target exists, so a concurrent writer cannot be replaced either.
-- After those checks, the tool deletes a base copy `inbox/.base/<path>` left
-  from an earlier edit, so a proposal has a base copy exactly when it started
-  from an edit of a vault note.
+  `Projects/Plan.md`. An entry at `path` in the selected commit returns
+  `ALREADY_EXISTS`. Its parent directories need not exist, but those that
+  exist must be directories.
 - `content` is written as UTF-8 with LF line endings and no BOM. It may be
   empty.
+
+Checks run in this order: arguments, the path policy except existence, the
+selected commit, the entries on the path, the result size, and the push.
 
 #### knowledge_propose_edit
 
 ```text
-knowledge_propose_edit(path: str, base_sha256: str, edits: list[Edit])
+knowledge_propose_edit(summary: str, path: str, base_sha256: str,
+                       edits: list[Edit],
+                       topic: str | null = null, proposal: str | null = null)
 Edit = {old: str, new: str}
 ```
 
-- `path` names a vault note or a proposal:
-  - **A vault note `P`.** If `inbox/P` exists, the result is
-    `PROPOSAL_PENDING`, whose message says to edit the proposal under
-    `inbox/` instead. This holds even when `P` does not exist in the vault,
-    as for a new-note proposal.
-    Otherwise the tool writes the base copy `inbox/.base/P` with the note's
-    raw bytes, replacing any base copy left from an earlier proposal, and
-    then writes the proposal `inbox/P`.
-  - **A proposal `inbox/P`.** The tool replaces the proposal and keeps its
-    base copy. A proposal for a new note has no base copy.
+- `path` names a note in the selected commit.
 - `base_sha256` is 64 lowercase hexadecimal characters. It must equal the
-  SHA-256 of the raw bytes that the tool loads from `path`, for example the
+  SHA-256 of the note's raw bytes in the selected commit, for example the
   `content_sha256` of an earlier read; otherwise the result is
-  `STALE_CONTENT`. The tool loads the file with the bounded loader, so an
-  oversized or invalid file returns `FILE_TOO_LARGE` or `INVALID_ENCODING`
-  as for a read.
+  `STALE_CONTENT`. The tool loads the note with the size and encoding checks
+  of a read, so an oversized or invalid note returns `FILE_TOO_LARGE` or
+  `INVALID_ENCODING`.
 - `edits` holds 1 to the [edit limit](#initial-limits) of edits. Each `old`
   is non-empty; `new` may be empty, which deletes `old`.
 - The edits apply in order to the note's decoded text, as the read tools see
@@ -475,15 +484,32 @@ Edit = {old: str, new: str}
   earlier edits produced. No occurrence returns `TEXT_NOT_FOUND`, and more
   than one returns `TEXT_NOT_UNIQUE`; both messages give the edit's position
   in `edits`, counted from 1. If any edit fails, nothing is written.
-- The proposal keeps the note's encoding details. It starts with a BOM if
-  the loaded bytes do. If the loaded bytes contain CRLF, every LF of the
-  result is written as CRLF; otherwise LF stays. Bytes that contain both
-  CRLF and an LF without a preceding CR return `MIXED_LINE_ENDINGS`, because
-  either choice would change lines that the edits did not touch.
+- The proposal keeps the note's encoding details and file mode. It starts
+  with a BOM if the loaded bytes do. If the loaded bytes contain CRLF, every
+  LF of the result is written as CRLF; otherwise LF stays. Bytes that contain
+  both CRLF and an LF without a preceding CR return `MIXED_LINE_ENDINGS`,
+  because either choice would change lines that the edits did not touch.
 
-Checks run in this order: arguments, the path policy except existence,
-`PROPOSAL_PENDING`, existence and the load, `STALE_CONTENT`,
-`MIXED_LINE_ENDINGS`, the edits, and the result size.
+Checks run in this order: arguments, the path policy except existence, the
+selected commit, the entries on the path and the load, `STALE_CONTENT`,
+`MIXED_LINE_ENDINGS`, the edits, the result size, and the push.
+
+#### knowledge_list_proposals
+
+```text
+knowledge_list_proposals()
+```
+
+The tool fetches `main` and all proposal branches from the vault remote and
+returns `proposals`, ordered by branch name. Each entry has `proposal`, the
+branch name, and `paths`, the notes that the branch changes, relative to the
+root and sorted. These are the notes that differ between the branch tip and
+its merge base with `main`, so the list of a merged branch is empty until
+the vault owner deletes the branch. Paths outside the root and entries that
+the path policy excludes, such as hidden paths, symlinks, and non-Markdown
+files, are left out, and so are branches whose names do not match the
+pattern. A listing that scans more branches and changed paths than the
+[listing limit](#initial-limits) returns `DIRECTORY_LIMIT_EXCEEDED`.
 
 ## Error and change behavior
 
@@ -501,7 +527,7 @@ value from the request. Codes: `INVALID_ARGUMENT`, `INVALID_PATH`,
 `NOT_FOUND`, `ACCESS_DENIED`, `UNSUPPORTED_TYPE`, `NOT_A_FILE`,
 `NOT_A_DIRECTORY`, `FILE_TOO_LARGE`, `INVALID_ENCODING`, `LINE_TOO_LONG`,
 `SEARCH_LIMIT_EXCEEDED`, `DIRECTORY_LIMIT_EXCEEDED`, `SEARCH_FAILED`,
-`ALREADY_EXISTS`, `PROPOSAL_PENDING`, `STALE_CONTENT`, `TEXT_NOT_FOUND`,
+`ALREADY_EXISTS`, `GIT_FAILED`, `STALE_CONTENT`, `TEXT_NOT_FOUND`,
 `TEXT_NOT_UNIQUE`, `MIXED_LINE_ENDINGS`, `INTERNAL_ERROR`. The [write
 tools](#write-proposals) define the codes that only they return.
 
@@ -534,10 +560,11 @@ An unexpected exception in any tool becomes a generic `INTERNAL_ERROR`, never
 raw exception text, and its log entry follows the content restrictions above.
 Cancellation still propagates to active work.
 
-Each operation reads the local vault checkout on a best-effort basis.
+Each operation on the root reads the local vault checkout on a best-effort
+basis.
 Concurrent edits may affect a read, and search locations can become stale
-before a subsequent call. Read and info derive their content, line counts, and
-hashes from the bounded bytes they load. There is no snapshot guarantee or
+before a subsequent call. Read derives its content, line count, and hash
+from the bounded bytes it loads. There is no snapshot guarantee or
 general concurrent-edit detection; only an edit proposal checks
 `base_sha256`. Do not cache content between requests. Callers can repeat
 search/read if a note changes.
@@ -555,10 +582,9 @@ that no tool reveals hidden or symlinked content. Cover subprocess arguments,
 exit codes, timeout cleanup, and bounded output as well as ordinary search
 success.
 
-Write-tool tests use a temporary inbox and check that nothing outside it
-changes. They cover a new note, an existing target, a path under `inbox/`, a
-first edit with its base copy, an edit of a pending proposal, an edit of a
-vault note that has one, a stale hash, a text to replace that is missing or
-occurs more than once, edits that depend on earlier edits, BOM and CRLF
-preservation, mixed line endings, NUL, CR, or U+FEFF in text, the text, edit,
-and result limits, and reading proposals through the four read tools.
+Proposal tests use temporary local Git repositories with invented notes and need
+no network. They cover a new note, an edit, a revision, refused pushes, a
+missing branch, a failed push, an invalid summary, a subtree root, listing,
+reads from a branch, the path policy for branch contents, text, edit, and result
+limits, exact replacements, and BOM and CRLF preservation. They check that the
+local vault checkout does not change.

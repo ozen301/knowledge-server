@@ -110,12 +110,12 @@ If the command works by hand but not in the host:
   edit is visible in the next tool call without a restart. The server does
   not search Git history or cache content. The root is resolved once at
   startup, so restart the host, or the HTTP service, after moving the vault.
-- **No note changes or Git operations.** The server never changes a note and
-  never runs Git. Over stdio it writes no files at all; over HTTP, web clients
-  can save [write proposals](use-with-web-clients.md#enable-write-proposals) in
-  an inbox for you to review. You synchronize the local vault checkout with Git
-  yourself. Results during a pull or checkout can mix old and new files; repeat
-  the question afterwards.
+- **No note changes.** The server never changes a note. Over stdio it
+  writes no files and runs no Git commands; over HTTP, web clients can save
+  [write proposals](use-with-web-clients.md#enable-write-proposals) as
+  branches of the vault remote for you to review. You synchronize the local
+  vault checkout with Git yourself. Results during a pull or checkout can
+  mix old and new files; repeat the question afterwards.
 - **Visible notes only.** All tools see regular files with a `.md` suffix
   (any letter case) in non-hidden directories. They exclude hidden names that
   start with `.`, such as `.git` and `.obsidian`, symlinks, special files, and

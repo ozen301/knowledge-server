@@ -27,8 +27,6 @@ from knowledge_server.adapter.server import create_server
 from knowledge_server.core.limits import DEFAULT_LIMITS
 from knowledge_server.core.models import (
     DomainErrorCode,
-    InfoRequest,
-    InfoResult,
     KnowledgeError,
     ListRequest,
     ListResult,
@@ -41,7 +39,9 @@ from knowledge_server.core.models import (
     SearchResult,
 )
 from knowledge_server.core.paths import PathPolicy
-from knowledge_server.core.reader import list_directory, note_info, read_note
+from knowledge_server.core.reader import list_directory, read_note
+
+type ProposalVault = tuple[Path, Path, Path, Callable[..., bytes]]
 
 _FOUND_RG = shutil.which("rg")
 if _FOUND_RG is None:
@@ -51,7 +51,7 @@ RG: str = _FOUND_RG
 SECRET = "SENTINEL-SECRET"
 PRIVATE_TEXT = "PRIVATE-EXCEPTION-TEXT"
 QUERY_TEXT = "QUERY-PRIVATE-TEXT"
-TOOL_NAMES = {"knowledge_search", "knowledge_read", "knowledge_list", "knowledge_info"}
+TOOL_NAMES = {"knowledge_search", "knowledge_read", "knowledge_list"}
 WRITE_TOOL_NAMES = {"knowledge_propose_note", "knowledge_propose_edit"}
 MAX_RESULTS = DEFAULT_LIMITS.max_search_results
 MAX_PAGE = DEFAULT_LIMITS.max_directory_page
@@ -140,10 +140,29 @@ def _dump(result: Any) -> dict[str, Any]:
     return result.model_dump(mode="json")
 
 
+def _published_schema(model: Any) -> dict[str, Any]:
+    schema = model.model_json_schema()
+    schema.pop("description", None)
+    for definition in schema.get("$defs", {}).values():
+        definition.pop("description", None)
+
+    def remove_titles(value: Any) -> None:
+        if isinstance(value, dict):
+            value.pop("title", None)
+            for child in value.values():
+                remove_titles(child)
+        elif isinstance(value, list):
+            for child in value:
+                remove_titles(child)
+
+    remove_titles(schema)
+    return schema
+
+
 # Tool discovery
 
 
-def test_server_lists_four_tools_with_contract_schemas(vault: Path) -> None:
+def test_server_lists_three_tools_with_contract_schemas(vault: Path) -> None:
     """Schemas come from the request and result models the contract defines."""
 
     async def list_tools() -> Any:
@@ -157,11 +176,10 @@ def test_server_lists_four_tools_with_contract_schemas(vault: Path) -> None:
         "knowledge_search": (SearchRequest, SearchResult),
         "knowledge_read": (ReadRequest, ReadResult),
         "knowledge_list": (ListRequest, ListResult),
-        "knowledge_info": (InfoRequest, InfoResult),
     }
     for name, (request_model, result_model) in models.items():
-        assert tools[name].input_schema == request_model.model_json_schema()
-        assert tools[name].output_schema == result_model.model_json_schema()
+        assert tools[name].input_schema == _published_schema(request_model)
+        assert tools[name].output_schema == _published_schema(result_model)
         assert tools[name].description
 
     def properties(schema: dict[str, Any]) -> set[str]:
@@ -172,7 +190,6 @@ def test_server_lists_four_tools_with_contract_schemas(vault: Path) -> None:
         "path",
         "max_results",
         "case_sensitive",
-        "mode",
     }
     assert tools["knowledge_search"].input_schema["required"] == ["queries"]
     assert properties(tools["knowledge_read"].input_schema) == {
@@ -187,16 +204,12 @@ def test_server_lists_four_tools_with_contract_schemas(vault: Path) -> None:
         "limit",
     }
     assert "required" not in tools["knowledge_list"].input_schema
-    assert properties(tools["knowledge_info"].input_schema) == {"path"}
-    assert tools["knowledge_info"].input_schema["required"] == ["path"]
     for tool in tools.values():
         assert tool.input_schema["additionalProperties"] is False
 
     assert properties(tools["knowledge_search"].output_schema or {}) == {
-        "mode",
         "matches",
         "truncated",
-        "incomplete",
         "skipped",
     }
     assert properties(tools["knowledge_read"].output_schema or {}) == {
@@ -213,16 +226,6 @@ def test_server_lists_four_tools_with_contract_schemas(vault: Path) -> None:
         "path",
         "entries",
         "next_offset",
-        "truncated",
-    }
-    assert properties(tools["knowledge_info"].output_schema or {}) == {
-        "path",
-        "size_bytes",
-        "modified_at",
-        "line_count",
-        "content_sha256",
-        "readable",
-        "unreadable_reason",
     }
 
 
@@ -243,142 +246,112 @@ def test_every_tool_is_annotated_read_only(vault: Path) -> None:
         assert annotations.title
 
 
-def test_read_tool_descriptions_mark_inbox_notes_as_unreviewed(vault: Path) -> None:
-    """Search, read, and list warn that inbox notes are not yet reviewed."""
+def test_write_tools_are_served_only_when_enabled(
+    proposal_vault: ProposalVault,
+) -> None:
+    """HTTP proposal access publishes schemas and accurate guidance."""
+    vault, _, remote, _ = proposal_vault
 
-    async def list_tools() -> Any:
-        async with Client(create_server(PathPolicy(vault), ripgrep=RG)) as client:
-            return await client.list_tools()
-
-    tools = {tool.name: tool for tool in _run(list_tools()).tools}
-    for name in ("knowledge_search", "knowledge_read", "knowledge_list"):
-        assert "inbox/ are unreviewed proposals" in (tools[name].description or "")
-
-
-# Write tools
-
-
-def test_write_tools_are_served_only_when_enabled(vault: Path) -> None:
-    """The write tools have their own schemas, annotations, and descriptions."""
-
-    async def list_tools(write_proposals: bool) -> Any:
+    async def list_tools(enabled: bool) -> Any:
         server = create_server(
-            PathPolicy(vault), ripgrep=RG, write_proposals=write_proposals
+            PathPolicy(vault),
+            ripgrep=RG,
+            vault_remote=str(remote) if enabled else None,
+            ssh_command=None,
         )
         async with Client(server) as client:
             return await client.list_tools()
 
     assert {tool.name for tool in _run(list_tools(False)).tools} == TOOL_NAMES
     tools = {tool.name: tool for tool in _run(list_tools(True)).tools}
-    assert set(tools) == TOOL_NAMES | WRITE_TOOL_NAMES
-    for name, request_model in (
+    assert set(tools) == TOOL_NAMES | WRITE_TOOL_NAMES | {"knowledge_list_proposals"}
+    for name, model in (
         ("knowledge_propose_note", ProposeNoteRequest),
         ("knowledge_propose_edit", ProposeEditRequest),
     ):
         tool = tools[name]
-        assert tool.input_schema == request_model.model_json_schema()
-        assert tool.output_schema == ProposalResult.model_json_schema()
-        assert tool.annotations is not None
+        assert tool.input_schema == _published_schema(model)
+        assert tool.output_schema == _published_schema(ProposalResult)
         assert tool.annotations.read_only_hint is False
         assert tool.annotations.idempotent_hint is False
         assert tool.annotations.open_world_hint is False
-        assert tool.annotations.title
-        assert "proposal" in (tool.description or "")
-        assert "read AGENTS.md at the root" in (tool.description or "")
-        assert "search with the knowledge tools instead" in (tool.description or "")
-        assert "never by an inbox/ path" in (tool.description or "")
+        assert "read AGENTS.md at the root" in tool.description
+        assert "search with the knowledge tools instead" in tool.description
+        assert "vault path" in tool.description
     assert tools["knowledge_propose_note"].annotations.destructive_hint is False
     assert tools["knowledge_propose_edit"].annotations.destructive_hint is True
-    assert "never on your own initiative" in (
-        tools["knowledge_propose_edit"].description or ""
-    )
-    assert "initiative" not in (tools["knowledge_propose_note"].description or "")
-    for name in TOOL_NAMES:
-        assert tools[name].annotations.read_only_hint is True
+    assert "never on your own initiative" in tools["knowledge_propose_edit"].description
+    assert tools["knowledge_list_proposals"].annotations.read_only_hint is True
+    assert "proposal" in tools["knowledge_read"].input_schema["properties"]
 
 
-def test_write_tools_save_proposals_that_the_read_tools_serve(vault: Path) -> None:
-    """A proposal written through the adapter is visible to all four read tools."""
-    (vault / "inbox").mkdir()
-    before = _snapshot(vault / "notes")
+def test_adapter_writes_and_reads_proposal_branches(
+    proposal_vault: ProposalVault,
+) -> None:
+    """Tools expose branches while ordinary retrieval still reads the root."""
+    vault, _, remote, _ = proposal_vault
+    before = _snapshot(vault)
 
-    async def exercise() -> list[CallToolResult]:
-        server = create_server(PathPolicy(vault), ripgrep=RG, write_proposals=True)
+    async def exercise() -> None:
+        server = create_server(
+            PathPolicy(vault),
+            ripgrep=RG,
+            vault_remote=str(remote),
+            ssh_command=None,
+        )
         async with Client(server) as client:
-            read = _success(
-                await client.call_tool("knowledge_read", {"path": "notes/alpha.md"})
-            )
-            calls = [
-                (
+            note = _success(
+                await client.call_tool(
                     "knowledge_propose_note",
-                    {"path": "plans/plan.md", "content": "Plan\n"},
-                ),
-                (
+                    {
+                        "path": "new.md",
+                        "content": "proposal text",
+                        "topic": "plan",
+                        "summary": "Add a plan",
+                    },
+                )
+            )
+            assert note["path"] == "new.md"
+            read = _success(
+                await client.call_tool(
+                    "knowledge_read",
+                    {
+                        "path": "new.md",
+                        "proposal": note["proposal"],
+                    },
+                )
+            )
+            assert read["content_sha256"] == note["content_sha256"]
+            edited = _success(
+                await client.call_tool(
                     "knowledge_propose_edit",
                     {
-                        "path": "notes/alpha.md",
+                        "path": "new.md",
+                        "proposal": note["proposal"],
+                        "summary": "Revise the plan",
                         "base_sha256": read["content_sha256"],
-                        "edits": [{"old": "ECC memory", "new": "ECC proposal"}],
+                        "edits": [{"old": "proposal", "new": "revised"}],
                     },
-                ),
-                ("knowledge_search", {"queries": ["ECC proposal"]}),
-                ("knowledge_read", {"path": "inbox/notes/alpha.md"}),
-                ("knowledge_list", {"path": "inbox"}),
-                ("knowledge_info", {"path": "inbox/plans/plan.md"}),
-                (
-                    "knowledge_propose_edit",
-                    {
-                        "path": "notes/alpha.md",
-                        "base_sha256": read["content_sha256"],
-                        "edits": [{"old": "third", "new": "x"}],
-                    },
-                ),
-                (
-                    "knowledge_propose_edit",
-                    {
-                        "path": "inbox/notes/alpha.md",
-                        "base_sha256": "0" * 64,
-                        "edits": [{"old": "x", "new": "y"}],
-                    },
-                ),
-                ("knowledge_propose_note", {"path": "a.md", "content": "a\r\n"}),
+                )
+            )
+            assert edited["proposal"] == note["proposal"]
+            listing = _success(await client.call_tool("knowledge_list_proposals", {}))
+            assert listing["proposals"] == [
+                {"proposal": note["proposal"], "paths": ["new.md"]}
             ]
-            return [
-                await client.call_tool(name, arguments) for name, arguments in calls
-            ]
+            invalid = await client.call_tool("knowledge_list_proposals", {"unknown": 1})
+            assert _error(invalid)["code"] == "INVALID_ARGUMENT"
+            missing = await client.call_tool("knowledge_read", {"path": "new.md"})
+            assert _error(missing)["code"] == "NOT_FOUND"
+            search = _success(
+                await client.call_tool("knowledge_search", {"queries": ["revised"]})
+            )
+            assert search["matches"] == []
+            root = _success(await client.call_tool("knowledge_list", {}))
+            assert "new.md" not in [entry["path"] for entry in root["entries"]]
 
-    (
-        note,
-        edit,
-        search,
-        read,
-        listing,
-        info,
-        pending,
-        stale,
-        invalid,
-    ) = _run(exercise())
-    assert _success(note)["path"] == "inbox/plans/plan.md"
-    assert _success(edit)["path"] == "inbox/notes/alpha.md"
-    assert [match["path"] for match in _success(search)["matches"]] == [
-        "inbox/notes/alpha.md"
-    ]
-    assert _success(read)["content_sha256"] == _success(edit)["content_sha256"]
-    assert [entry["path"] for entry in _success(listing)["entries"]] == [
-        "inbox/notes",
-        "inbox/plans",
-    ]
-    assert _success(info)["readable"] is True
-    assert _error(pending)["code"] == "PROPOSAL_PENDING"
-    assert _error(stale)["code"] == "STALE_CONTENT"
-    assert _error(invalid) == {
-        "code": "INVALID_ARGUMENT",
-        "message": (
-            "Text must be valid Unicode without NUL, CR, or U+FEFF characters; "
-            "use LF for line breaks."
-        ),
-    }
-    assert _snapshot(vault / "notes") == before
+    _run(exercise())
+    assert _snapshot(vault) == before
 
 
 # Successful calls
@@ -389,14 +362,13 @@ def test_successful_calls_return_core_results_as_structured_content_and_json(
 ) -> None:
     """Each tool returns the core result, with equivalent JSON text."""
     before = _snapshot(vault)
-    search, read, listing, info = _run(
+    search, read, listing = _run(
         _call_in_process(
             vault,
             [
                 ("knowledge_search", {"queries": ["ECC"]}),
                 ("knowledge_read", {"path": "notes/alpha.md", "end_line": 2}),
                 ("knowledge_list", {"path": "notes"}),
-                ("knowledge_info", {"path": "notes/alpha.md"}),
             ],
         )
     )
@@ -410,9 +382,6 @@ def test_successful_calls_return_core_results_as_structured_content_and_json(
         read_note(policy, ReadRequest(path="notes/alpha.md", end_line=2))
     )
     assert _success(listing) == _dump(list_directory(policy, ListRequest(path="notes")))
-    assert _success(info) == _dump(
-        note_info(policy, InfoRequest(path="notes/alpha.md"))
-    )
     assert _snapshot(vault) == before
 
 
@@ -490,7 +459,7 @@ PAGE_RANGE = f"limit must be an integer from 1 to {MAX_PAGE}."
             {"query": "ECC"},
             QUERIES.replace("queries", "queries is required and", 1)
             + " Unknown argument. Valid arguments: queries, path, max_results, "
-            "case_sensitive, mode.",
+            "case_sensitive.",
         ),
         ("knowledge_search", {"queries": "ECC"}, QUERIES),
         ("knowledge_search", {"queries": []}, QUERIES),
@@ -518,13 +487,12 @@ PAGE_RANGE = f"limit must be an integer from 1 to {MAX_PAGE}."
         (
             "knowledge_search",
             {"queries": ["ECC"], "mode": "regex"},
-            'mode must be "literal".',
+            "Unknown argument. Valid arguments: queries, path, max_results, case_sensitive.",
         ),
         ("knowledge_list", {"offset": -1}, "offset must be an integer of at least 0."),
         ("knowledge_list", {"limit": 0}, PAGE_RANGE),
         ("knowledge_list", {"limit": MAX_PAGE + 1}, PAGE_RANGE),
         ("knowledge_list", {"limit": 1.0}, PAGE_RANGE),
-        ("knowledge_info", {"path": ["notes/alpha.md"]}, PATH_STRING),
     ],
 )
 def test_invalid_arguments_name_the_argument_and_accepted_values(
@@ -566,8 +534,6 @@ def test_argument_descriptions_state_the_limits(vault: Path) -> None:
         ("knowledge_read", {"path": "../outside.md"}, "INVALID_PATH"),
         ("knowledge_read", {"path": "missing.md"}, "NOT_FOUND"),
         ("knowledge_read", {"path": "notes"}, "UNSUPPORTED_TYPE"),
-        ("knowledge_info", {"path": "/etc/hostname.md"}, "INVALID_PATH"),
-        ("knowledge_info", {"path": "link.md"}, "ACCESS_DENIED"),
         ("knowledge_list", {"path": "notes/alpha.md"}, "NOT_A_DIRECTORY"),
         ("knowledge_list", {"path": ".hidden"}, "ACCESS_DENIED"),
         ("knowledge_search", {"queries": [SECRET], "path": ".hidden"}, "ACCESS_DENIED"),
@@ -594,7 +560,7 @@ def test_search_does_not_reveal_hidden_or_symlinked_notes(vault: Path) -> None:
     )
     content = _success(result)
     assert content["matches"] == []
-    assert content["incomplete"] is False
+    assert not any(content["skipped"].values())
 
 
 # Unexpected exceptions
@@ -636,7 +602,6 @@ def _fail_once_async[**P, R](
         ("knowledge_search", "search_notes", {"queries": [f"ECC {QUERY_TEXT}"]}),
         ("knowledge_read", "read_note", {"path": "notes/alpha.md"}),
         ("knowledge_list", "list_directory", {"path": "notes"}),
-        ("knowledge_info", "note_info", {"path": "notes/alpha.md"}),
     ],
 )
 def test_unexpected_exception_returns_safe_internal_error(
@@ -769,7 +734,7 @@ def _socket_inodes(pid: int) -> set[str]:
 
 
 @pytest.mark.skipif(not Path("/proc/self/task").is_dir(), reason="needs Linux /proc")
-def test_stdio_session_serves_four_tools_and_exits_cleanly(
+def test_stdio_session_serves_three_tools_and_exits_cleanly(
     vault: Path, tmp_path: Path
 ) -> None:
     """A real SDK client drives the entry point over stdio."""
@@ -789,8 +754,8 @@ def test_stdio_session_serves_four_tools_and_exits_cleanly(
                 "path": "empty",
                 "kind": "directory",
             }
-            info = await client.call_tool("knowledge_info", {"path": "notes/beta.md"})
-            assert _success(info)["line_count"] == 1
+            second = await client.call_tool("knowledge_read", {"path": "notes/beta.md"})
+            assert _success(second)["total_lines"] == 1
 
             missing = await client.call_tool("knowledge_read", {"path": "missing.md"})
             assert _error(missing)["code"] == "NOT_FOUND"
@@ -799,7 +764,7 @@ def test_stdio_session_serves_four_tools_and_exits_cleanly(
                 "code": "INVALID_ARGUMENT",
                 "message": PAGE_RANGE,
             }
-            again = await client.call_tool("knowledge_info", {"path": "notes/beta.md"})
+            again = await client.call_tool("knowledge_read", {"path": "notes/beta.md"})
             _success(again)
 
             server_processes = _descendants(os.getpid())
@@ -820,7 +785,7 @@ def test_stdio_unexpected_exception_is_logged_without_private_text(
     prelude = f"""
     from knowledge_server.adapter import server as _server
 
-    _original = _server.note_info
+    _original = _server.read_note
     _calls = []
 
     def _fail_once(*args, **kwargs):
@@ -829,19 +794,19 @@ def test_stdio_unexpected_exception_is_logged_without_private_text(
             raise RuntimeError({f"{vault}/notes/alpha.md {PRIVATE_TEXT}"!r})
         return _original(*args, **kwargs)
 
-    _server.note_info = _fail_once
+    _server.read_note = _fail_once
     """
     launch = _Launch(tmp_path / "launch", vault, prelude=prelude)
 
     async def exercise() -> None:
         async with Client(launch.parameters) as client:
             failed = await client.call_tool(
-                "knowledge_info", {"path": "notes/alpha.md"}
+                "knowledge_read", {"path": "notes/alpha.md"}
             )
             assert _error(failed) == INTERNAL_ERROR
             assert PRIVATE_TEXT not in _text(failed)
             succeeded = await client.call_tool(
-                "knowledge_info", {"path": "notes/alpha.md"}
+                "knowledge_read", {"path": "notes/alpha.md"}
             )
             _success(succeeded)
 
@@ -849,7 +814,7 @@ def test_stdio_unexpected_exception_is_logged_without_private_text(
     assert launch.status.read_text(encoding="utf-8") == "0"
     launch.check_stdout_is_protocol_only()
     stderr = launch.stderr.read_text(encoding="utf-8")
-    assert "knowledge_info" in stderr
+    assert "knowledge_read" in stderr
     assert PRIVATE_TEXT not in stderr
     assert str(vault) not in stderr
 
@@ -885,8 +850,8 @@ def test_stdio_cancelled_search_kills_ripgrep(vault: Path, tmp_path: Path) -> No
                 assert time.monotonic() - cancelled_at < 3
                 await asyncio.sleep(0.05)
 
-            info = await client.call_tool("knowledge_info", {"path": "notes/beta.md"})
-            _success(info)
+            read = await client.call_tool("knowledge_read", {"path": "notes/beta.md"})
+            _success(read)
 
     _run(exercise())
     assert launch.status.read_text(encoding="utf-8") == "0"
@@ -941,3 +906,92 @@ def test_startup_fails_without_ripgrep(vault: Path, tmp_path: Path) -> None:
     assert result.stdout == ""
     assert "ripgrep" in result.stderr
     assert str(vault) not in result.stderr
+
+
+def test_summary_validation_precedes_git(
+    proposal_vault: ProposalVault, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both write tools reject missing, blank, long, and multiline summaries."""
+    from knowledge_server.core import git as git_module
+
+    vault, _, remote, _ = proposal_vault
+    server = create_server(
+        PathPolicy(vault), ripgrep=RG, vault_remote=str(remote), ssh_command=None
+    )
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("Invalid summary reached Git")
+
+    monkeypatch.setattr(git_module, "run_git", unexpected)
+
+    async def exercise() -> None:
+        async with Client(server) as client:
+            for name, arguments in (
+                (
+                    "knowledge_propose_note",
+                    {"path": "new.md", "content": "text", "topic": "test"},
+                ),
+                (
+                    "knowledge_propose_edit",
+                    {
+                        "path": "note.md",
+                        "base_sha256": "a" * 64,
+                        "edits": [{"old": "one", "new": "two"}],
+                        "topic": "test",
+                    },
+                ),
+            ):
+                assert (
+                    _error(await client.call_tool(name, arguments))["code"]
+                    == "INVALID_ARGUMENT"
+                )
+                for summary in (
+                    None,
+                    1,
+                    "",
+                    "  ",
+                    "\u00a0",
+                    "x" * 201,
+                    "a\nb",
+                    "a\rb",
+                    "a\tb",
+                    "a\x00b",
+                    "a\x7fb",
+                    "a\x85b",
+                    "a\u2028b",
+                    "a\u2029b",
+                ):
+                    assert (
+                        _error(
+                            await client.call_tool(
+                                name, {**arguments, "summary": summary}
+                            )
+                        )["code"]
+                        == "INVALID_ARGUMENT"
+                    )
+
+    _run(exercise())
+
+
+@pytest.mark.parametrize(
+    "summary", ["x", "日" * 200, " Preserve spaces ", "Change \u200dtext"]
+)
+def test_summary_accepts_unicode_and_preserves_text(summary: str) -> None:
+    """Summary lengths count Unicode code points and preserve accepted text."""
+    for model, arguments in (
+        (ProposeNoteRequest, {"path": "new.md", "content": "text"}),
+        (
+            ProposeEditRequest,
+            {
+                "path": "note.md",
+                "base_sha256": "a" * 64,
+                "edits": [{"old": "one", "new": "two"}],
+            },
+        ),
+    ):
+        assert (
+            model.model_validate(
+                {**arguments, "topic": "test", "summary": summary}
+            ).summary
+            == summary
+        )

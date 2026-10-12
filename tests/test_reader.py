@@ -1,10 +1,9 @@
-"""Tests for bounded reading, directory listing, and file metadata."""
+"""Tests for bounded reading, directory listing."""
 
 import errno
 import hashlib
 import os
 from collections.abc import Callable
-from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -12,14 +11,13 @@ import pytest
 from knowledge_server.core.limits import DEFAULT_LIMITS, Limits
 from knowledge_server.core.models import (
     DomainErrorCode,
-    InfoRequest,
     KnowledgeError,
     ListRequest,
     ReadRequest,
     ReadResult,
 )
 from knowledge_server.core.paths import PathPolicy, ResolvedPath, TargetKind
-from knowledge_server.core.reader import list_directory, note_info, read_note
+from knowledge_server.core.reader import list_directory, read_note
 
 SMALL = Limits(
     max_file_bytes=64,
@@ -49,10 +47,9 @@ def _error_code(operation: Callable[..., object], *args: object) -> DomainErrorC
 def _both_operations(
     policy: PathPolicy, path: str, limits: Limits = DEFAULT_LIMITS
 ) -> list[Callable[[], object]]:
-    """Return read and info calls for one path, to check shared failures."""
+    """Return read calls for one path, to check shared failures."""
     return [
         lambda: read_note(policy, ReadRequest(path=path), limits=limits),
-        lambda: note_info(policy, InfoRequest(path=path), limits=limits),
     ]
 
 
@@ -300,8 +297,10 @@ def test_invalid_encoding(tmp_path: Path, data: bytes) -> None:
 def test_size_limit_uses_raw_bytes(tmp_path: Path) -> None:
     """A file at the limit is readable; one byte more is too large."""
     _write(tmp_path, "at.md", b"x" * 63 + b"\n")
-    info = note_info(PathPolicy(tmp_path), InfoRequest(path="at.md"), limits=SMALL)
-    assert info.readable is True
+    assert (
+        _text(_read(tmp_path, "at.md", limits=Limits(max_file_bytes=64)))
+        == "x" * 63 + "\n"
+    )
     # CRLF normalization would bring this file within the limit.
     _write(tmp_path, "over.md", b"x" * 63 + b"\r\n")
     code = _error_code(_read, tmp_path, "over.md", 1, 1, SMALL)
@@ -330,7 +329,7 @@ def test_oversized_file_is_not_fully_read(
     assert sum(requested) <= SMALL.max_file_bytes + 1
 
 
-# Read and info: path policy and I/O failures
+# Read: path policy and I/O failures
 
 
 @pytest.fixture
@@ -363,10 +362,10 @@ def policy_vault(tmp_path: Path) -> Path:
         ("../outside.md", DomainErrorCode.INVALID_PATH),
     ],
 )
-def test_read_and_info_apply_policy(
+def test_read_applies_policy(
     policy_vault: Path, path: str, code: DomainErrorCode
 ) -> None:
-    """Read and info reject the same disallowed targets."""
+    """Read reject the same disallowed targets."""
     policy = PathPolicy(policy_vault)
     for operation in _both_operations(policy, path):
         with pytest.raises(KnowledgeError) as error:
@@ -485,70 +484,11 @@ def test_file_replaced_by_fifo_after_policy_check(
 
     monkeypatch.setattr(policy, "resolve", swapping_resolve)
     with pytest.raises(KnowledgeError) as error:
-        note_info(policy, InfoRequest(path="note.md"))
+        read_note(policy, ReadRequest(path="note.md"))
     assert error.value.code is DomainErrorCode.ACCESS_DENIED
 
 
-# Info
-
-
-def test_info_readable(tmp_path: Path) -> None:
-    """Info derives the line count and hash from the loaded bytes."""
-    data = b"\xef\xbb\xbfa\r\nb"
-    path = _write(tmp_path, "note.md", data)
-    result = note_info(PathPolicy(tmp_path), InfoRequest(path="note.md"))
-    assert result.path == "note.md"
-    assert result.size_bytes == len(data)
-    assert result.line_count == 2
-    assert result.content_sha256 == hashlib.sha256(data).hexdigest()
-    assert result.readable is True
-    assert result.unreadable_reason is None
-    modified = datetime.fromisoformat(result.modified_at)
-    assert result.modified_at.endswith("Z")
-    assert modified.timestamp() == pytest.approx(path.stat().st_mtime, abs=1e-6)
-
-
-def test_info_line_count_matches_read(tmp_path: Path) -> None:
-    """Info and read agree on line counts, including a BOM-only file."""
-    policy = PathPolicy(tmp_path)
-    for index, data in enumerate([b"", b"\xef\xbb\xbf", b"\n", b"a\rb", b"a\nb\n"]):
-        name = f"n{index}.md"
-        _write(tmp_path, name, data)
-        info = note_info(policy, InfoRequest(path=name))
-        read = read_note(policy, ReadRequest(path=name))
-        assert info.line_count == read.total_lines
-        assert info.content_sha256 == read.content_sha256
-
-
-def test_info_oversized(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Oversized files report metadata without an unbounded read."""
-    _write(tmp_path, "big.md", b"x" * 10_000)
-    requested: list[int] = []
-    real_read = os.read
-
-    def tracking_read(fd: int, size: int) -> bytes:
-        requested.append(size)
-        return real_read(fd, size)
-
-    monkeypatch.setattr(os, "read", tracking_read)
-    result = note_info(PathPolicy(tmp_path), InfoRequest(path="big.md"), limits=SMALL)
-    assert result.size_bytes == 10_000
-    assert result.readable is False
-    assert result.unreadable_reason == "too_large"
-    assert result.line_count is None
-    assert result.content_sha256 is None
-    assert sum(requested) <= SMALL.max_file_bytes + 1
-
-
-def test_info_invalid_text(tmp_path: Path) -> None:
-    """Invalid text is reported as unreadable metadata, not an error."""
-    _write(tmp_path, "bad.md", b"ok\x00\n")
-    result = note_info(PathPolicy(tmp_path), InfoRequest(path="bad.md"))
-    assert result.readable is False
-    assert result.unreadable_reason == "invalid_text"
-    assert result.line_count is None
-    assert result.content_sha256 is None
-    assert result.size_bytes == 4
+# Read: fresh content
 
 
 def test_changes_are_reflected(tmp_path: Path) -> None:
@@ -556,15 +496,10 @@ def test_changes_are_reflected(tmp_path: Path) -> None:
     policy = PathPolicy(tmp_path)
     _write(tmp_path, "note.md", "first\n")
     before = read_note(policy, ReadRequest(path="note.md"))
-    info_before = note_info(policy, InfoRequest(path="note.md"))
     _write(tmp_path, "note.md", "second\nline\n")
     after = read_note(policy, ReadRequest(path="note.md"))
-    info_after = note_info(policy, InfoRequest(path="note.md"))
     assert _text(after) == "second\nline\n"
     assert after.content_sha256 != before.content_sha256
-    assert info_after.content_sha256 == after.content_sha256
-    assert info_after.content_sha256 != info_before.content_sha256
-    assert info_after.line_count == 2
 
 
 # List
@@ -600,7 +535,7 @@ def test_list_filters_and_sorts(list_vault: Path) -> None:
         ("b.md", "file"),
     ]
     assert result.next_offset is None
-    assert result.truncated is False
+    assert "truncated" not in result.model_dump()
 
 
 def test_list_subdirectory(list_vault: Path) -> None:
@@ -635,7 +570,7 @@ def test_list_pagination(
     )
     assert [entry.path for entry in result.entries] == paths
     assert result.next_offset == next_offset
-    assert result.truncated is (next_offset is not None)
+    assert "truncated" not in result.model_dump()
 
 
 def test_list_limit_over_injected_maximum_is_invalid(list_vault: Path) -> None:

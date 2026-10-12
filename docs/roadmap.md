@@ -1,7 +1,7 @@
 # Roadmap
 
-Status: no task is in progress. This document lists optional later work,
-the constraints on it, and how to define and finish a task. The [design
+Status: no task is in progress. This document lists optional later work, the
+constraints on it, and how to define and finish a task. The [design
 decisions](design-decisions.md) record the decisions that later work must
 preserve.
 
@@ -12,8 +12,8 @@ real question or a result of the [retrieval
 questions](sample-notes.md#check-a-retrieval-change). Do not build frameworks
 or backend abstractions in advance.
 
-1. Define the work as a task under [Active tasks](#active-tasks): its goal,
-   the specification changes, and the acceptance checks.
+1. Define the work as a task under [Active tasks](#active-tasks): its goal
+   and the specification changes.
 2. Implement and review one task at a time, as one reviewable diff, with the
    workflow in [AGENTS.md](../AGENTS.md).
 3. When the task is complete, remove its entry, and update the documents

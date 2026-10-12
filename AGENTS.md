@@ -5,7 +5,7 @@ Context Protocol (MCP). The specifications, the [tool
 contract](docs/tool-contract.md) and the [HTTP contract](docs/http-contract.md),
 define exact behavior. The [design decisions](docs/design-decisions.md) explain
 why the server works as it does, and the [roadmap](docs/roadmap.md) lists
-optional later work and defines active tasks with their acceptance checks.
+optional later work and defines active tasks.
 
 Repository skills are in `.agents/skills/<name>/SKILL.md`. When asked to use
 one that your tool does not list, read that file and follow it. You may use the

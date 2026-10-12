@@ -4,8 +4,6 @@ import pytest
 from pydantic import ValidationError
 
 from knowledge_server.core.models import (
-    InfoRequest,
-    InfoResult,
     ListEntry,
     ListRequest,
     ListResult,
@@ -31,7 +29,6 @@ def test_requests_apply_contract_defaults() -> None:
         "path": "",
         "max_results": 20,
         "case_sensitive": False,
-        "mode": "literal",
     }
     assert ListRequest().model_dump() == {"path": "", "offset": 0, "limit": 100}
     assert ReadRequest(path="Notes/a.md").model_dump() == {
@@ -94,6 +91,7 @@ def test_request_limit_boundaries_reject_values_beyond_the_contract(
         (SearchRequest, {"queries": ("needle",)}),
         (SearchRequest, {"queries": ["needle", 1]}),
         (SearchRequest, {"query": "needle"}),
+        (SearchRequest, {"queries": ["needle"], "mode": "literal"}),
         (ReadRequest, {"path": "a.md", "start_line": True}),
         (ReadRequest, {"path": "a.md", "end_line": "2"}),
         (ListRequest, {"offset": False}),
@@ -101,11 +99,10 @@ def test_request_limit_boundaries_reject_values_beyond_the_contract(
         (SearchRequest, {"queries": ["needle"], "root": "/outside"}),
         (ReadRequest, {"path": "a.md", "root": "/outside"}),
         (ListRequest, {"root": "/outside"}),
-        (InfoRequest, {"path": "a.md", "root": "/outside"}),
     ],
 )
 def test_requests_reject_coercion_and_root_overrides(
-    model: type[SearchRequest | ReadRequest | ListRequest | InfoRequest],
+    model: type[SearchRequest | ReadRequest | ListRequest],
     arguments: dict[str, object],
 ) -> None:
     """Tool arguments cannot coerce values or override configured configuration."""
@@ -134,23 +131,10 @@ def test_read_ranges_follow_the_shared_limits(
 def test_result_models_reuse_the_contract_shapes() -> None:
     """All future tools have object-shaped typed results ready for the adapter."""
     assert SearchResult().model_dump() == {
-        "mode": "literal",
         "matches": [],
         "truncated": False,
-        "incomplete": False,
         "skipped": {"too_large": 0, "invalid_text": 0, "unreadable": 0},
     }
-    assert (
-        InfoResult(
-            path="Notes/a.md",
-            size_bytes=1,
-            modified_at="2026-09-22T00:00:00Z",
-            line_count=1,
-            content_sha256="a" * 64,
-            readable=True,
-        ).model_dump()["readable"]
-        is True
-    )
 
 
 def test_all_result_models_have_json_schema_and_round_trip() -> None:
@@ -175,15 +159,6 @@ def test_all_result_models_have_json_schema_and_round_trip() -> None:
             path="",
             entries=[ListEntry(path="a.md", kind="file")],
             next_offset=None,
-            truncated=False,
-        ),
-        InfoResult(
-            path="a.md",
-            size_bytes=2,
-            modified_at="2026-09-22T00:00:00Z",
-            line_count=1,
-            content_sha256="a" * 64,
-            readable=True,
         ),
     ]
     for result in results:

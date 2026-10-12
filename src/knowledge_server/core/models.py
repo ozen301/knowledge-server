@@ -7,11 +7,20 @@ show them.
 """
 
 import json
+import re
+import unicodedata
 from collections.abc import Iterable
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from knowledge_server.core.limits import DEFAULT_LIMITS
 
@@ -33,7 +42,7 @@ class DomainErrorCode(StrEnum):
     DIRECTORY_LIMIT_EXCEEDED = "DIRECTORY_LIMIT_EXCEEDED"
     SEARCH_FAILED = "SEARCH_FAILED"
     ALREADY_EXISTS = "ALREADY_EXISTS"
-    PROPOSAL_PENDING = "PROPOSAL_PENDING"
+    GIT_FAILED = "GIT_FAILED"
     STALE_CONTENT = "STALE_CONTENT"
     TEXT_NOT_FOUND = "TEXT_NOT_FOUND"
     TEXT_NOT_UNIQUE = "TEXT_NOT_UNIQUE"
@@ -60,14 +69,10 @@ _SAFE_MESSAGES: dict[DomainErrorCode, str] = {
     DomainErrorCode.SEARCH_LIMIT_EXCEEDED: "The search exceeded a resource limit.",
     DomainErrorCode.DIRECTORY_LIMIT_EXCEEDED: "The directory exceeds the entry limit.",
     DomainErrorCode.SEARCH_FAILED: "The search could not be completed.",
-    DomainErrorCode.ALREADY_EXISTS: (
-        "A note or proposal already exists at the requested path."
-    ),
-    DomainErrorCode.PROPOSAL_PENDING: (
-        "The note has a pending proposal; edit the proposal under inbox/ instead."
-    ),
+    DomainErrorCode.ALREADY_EXISTS: "The requested note or branch already exists.",
+    DomainErrorCode.GIT_FAILED: "The Git operation could not be completed.",
     DomainErrorCode.STALE_CONTENT: (
-        "The file changed since it was read; read it again and repeat the edit."
+        "The content or branch changed; read it again and repeat the write."
     ),
     DomainErrorCode.TEXT_NOT_FOUND: "The text to replace was not found.",
     DomainErrorCode.TEXT_NOT_UNIQUE: (
@@ -269,10 +274,6 @@ class SearchRequest(ContractModel):
         strict=True,
         description="Match letter case exactly when true.",
     )
-    mode: Literal["literal"] = Field(
-        default="literal",
-        description="Search mode. Only literal matching is available.",
-    )
 
     @model_validator(mode="after")
     def validate_literal_queries(self) -> SearchRequest:
@@ -359,21 +360,125 @@ class ListRequest(ContractModel):
     )
 
 
-class InfoRequest(ContractModel):
-    """Arguments for metadata about one note."""
-
-    path: str = Field(strict=True, description=f"Note to inspect. {_PATH_DESCRIPTION}")
+TOPIC_PATTERN = r"[a-z0-9]+(?:-[a-z0-9]+)*"
+PROPOSAL_PATTERN = rf"proposal/({TOPIC_PATTERN})-[0-9a-f]{{4}}"
 
 
-class ProposeNoteRequest(ContractModel):
+def validate_proposal(proposal: str) -> None:
+    """Reject a branch name outside the proposal namespace before running Git."""
+    match = re.fullmatch(PROPOSAL_PATTERN, proposal)
+    if match is None or not 1 <= len(match[1]) <= 40:
+        raise KnowledgeError(DomainErrorCode.INVALID_ARGUMENT)
+
+
+class ProposalReadRequest(ReadRequest):
+    """Read arguments for HTTP with proposal access enabled."""
+
+    proposal: str | None = Field(
+        default=None,
+        description=(
+            "Proposal branch to read the note from, such as "
+            "'proposal/sleep-notes-cleanup-3f9a'. Omit it to read the vault."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_branch(self) -> ProposalReadRequest:
+        """Check the optional proposal name.
+
+        Returns:
+            The validated request.
+        """
+        if self.proposal is not None:
+            try:
+                validate_proposal(self.proposal)
+            except KnowledgeError:
+                raise ValueError(
+                    "proposal must be a valid proposal branch name."
+                ) from None
+        return self
+
+
+class ProposalSelection(ContractModel):
+    """Reviewer summary and selection of a new or existing proposal branch."""
+
+    summary: str = Field(
+        min_length=1,
+        max_length=200,
+        description=(
+            "One line, at most 200 characters, that tells the reviewer what "
+            "the change does and why, such as 'Merge the duplicate sleep "
+            "notes'. The server puts it in the commit message."
+        ),
+    )
+
+    topic: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=40,
+        pattern=rf"^{TOPIC_PATTERN}$",
+        description=(
+            "Short name for a new proposal branch, such as "
+            "'sleep-notes-cleanup': lowercase letters and digits, with single "
+            "hyphens between words. Omit it when proposal is given."
+        ),
+    )
+    proposal: str | None = Field(
+        default=None,
+        description=(
+            "Existing proposal branch to add this change to, such as "
+            "'proposal/sleep-notes-cleanup-3f9a'. Omit it when topic is given."
+        ),
+    )
+
+    @field_validator("summary")
+    @classmethod
+    def validate_summary(cls, value: str) -> str:
+        """Reject blank summaries and characters that break the single line.
+
+        Returns:
+            The supplied summary, including any surrounding spaces.
+        """
+        if not value.strip() or any(
+            unicodedata.category(char) in {"Cc", "Zl", "Zp"} for char in value
+        ):
+            raise ValueError(
+                "summary must not be blank or contain control characters "
+                "or Unicode line or paragraph separators."
+            )
+        return value
+
+    @model_validator(mode="after")
+    def validate_selection(self) -> ProposalSelection:
+        """Require exactly one valid branch selection.
+
+        Returns:
+            The validated request.
+        """
+        if (self.topic is None) == (self.proposal is None):
+            raise ValueError(
+                "Pass either topic, to start a proposal branch, or proposal, "
+                "to revise one, but not both."
+            )
+        if self.proposal is not None:
+            try:
+                validate_proposal(self.proposal)
+            except KnowledgeError:
+                raise ValueError(
+                    "proposal must be a valid proposal branch name."
+                ) from None
+        return self
+
+
+class ProposeNoteRequest(ProposalSelection):
     """Arguments for proposing a new note."""
 
     path: str = Field(
         strict=True,
         description=(
             "Vault path the new note should have, such as 'Projects/Plan.md', "
-            "using '/' as separator. The proposal is saved at 'inbox/<path>'. "
-            "No note may exist at the path in the vault or the inbox."
+            "using '/' as separator. No note may exist at the path in the "
+            "vault, or on the branch when proposal is given."
         ),
     )
     content: str = Field(
@@ -414,21 +519,21 @@ class TextEdit(ContractModel):
     new: str = Field(strict=True, description="Replacement text; empty deletes `old`.")
 
 
-class ProposeEditRequest(ContractModel):
+class ProposeEditRequest(ProposalSelection):
     """Arguments for proposing text replacements in a note."""
 
     path: str = Field(
         strict=True,
         description=(
-            "Note to edit, relative to the vault root: a vault note, or its "
-            "pending proposal under 'inbox/'."
+            "Note to edit, relative to the vault root. With proposal, the "
+            "tool edits the note's version on that branch."
         ),
     )
     base_sha256: str = Field(
         strict=True,
         pattern=r"^[0-9a-f]{64}$",
         description=(
-            "The note's `content_sha256` from knowledge_read or knowledge_info, "
+            "The note's `content_sha256` from knowledge_read, "
             "or from the previous proposal result. The edit fails if the note "
             "has changed since."
         ),
@@ -494,9 +599,6 @@ class SearchSkipped(ContractModel):
 class SearchResult(ContractModel):
     """Result of a literal search."""
 
-    mode: Literal["literal"] = Field(
-        default="literal", description="Search mode that was used."
-    )
     matches: list[SearchMatch] = Field(
         default_factory=list,
         description="Matches ordered by path and then line number.",
@@ -504,10 +606,6 @@ class SearchResult(ContractModel):
     truncated: bool = Field(
         default=False,
         description="True when more matches exist than were returned.",
-    )
-    incomplete: bool = Field(
-        default=False,
-        description="True when some notes were skipped; see `skipped`.",
     )
     skipped: SearchSkipped = Field(
         default_factory=SearchSkipped,
@@ -578,44 +676,42 @@ class ListResult(ContractModel):
             "Offset to request the next page, or null when this page is the last."
         )
     )
-    truncated: bool = Field(description="True when more entries follow this page.")
-
-
-class InfoResult(ContractModel):
-    """Metadata about one note, including notes too large or invalid to read."""
-
-    path: str = Field(description="Note path, relative to the vault root.")
-    size_bytes: StrictNonNegativeInt = Field(description="File size in bytes.")
-    modified_at: str = Field(
-        description="Last modification time from the filesystem, in UTC (RFC 3339)."
-    )
-    line_count: StrictNonNegativeInt | None = Field(
-        description="Number of lines, or null when the note is not readable."
-    )
-    content_sha256: str | None = Field(
-        description=(
-            "SHA-256 of the file bytes, or null when the note is not readable."
-        )
-    )
-    readable: bool = Field(description="True when read and search can use the note.")
-    unreadable_reason: Literal["too_large", "invalid_text"] | None = Field(
-        default=None,
-        description="Why the note is not readable, or null when it is readable.",
-    )
 
 
 class ProposalResult(ContractModel):
     """Result of a write proposal."""
 
-    path: str = Field(
+    proposal: str = Field(
         description=(
-            "The proposal's path relative to the vault root: 'inbox/' followed "
-            "by the vault path."
+            "Proposal branch that holds the change. Pass it as proposal to "
+            "revise the branch."
         )
     )
+    path: str = Field(description="Note path, relative to the vault root.")
     content_sha256: str = Field(
         description=(
-            "SHA-256 of the proposal's file bytes. Pass it as `base_sha256` to "
-            "edit the proposal again."
+            "SHA-256 of the note's bytes on the branch. Pass it as `base_sha256`, "
+            "with this proposal, to edit the note again."
         )
+    )
+
+
+class ListProposalsRequest(ContractModel):
+    """No arguments are accepted when listing proposal branches."""
+
+
+class ProposalEntry(ContractModel):
+    """One proposal and the visible notes it changes."""
+
+    proposal: str = Field(description="Proposal branch name.")
+    paths: list[str] = Field(
+        description="Notes that the branch changes, relative to the vault root, sorted."
+    )
+
+
+class ListProposalsResult(ContractModel):
+    """The proposals fetched from the vault remote."""
+
+    proposals: list[ProposalEntry] = Field(
+        description="Proposal branches ordered by name."
     )

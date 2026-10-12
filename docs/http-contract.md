@@ -11,11 +11,12 @@ themselves.
 
 ## Entry point
 
-The entry point serves the four read tools of the [tool
+The entry point serves the three read tools of the [tool
 contract](tool-contract.md) at `/mcp` over the SDK's Streamable HTTP
 transport, in stateless mode with JSON responses. Their schemas and
 annotations are semantically equal to the stdio server's. When
-`write_proposals` is enabled, it also serves the two [write
+`vault_remote` is set, `knowledge_read` also takes the optional
+`proposal` argument, and the entry point serves the three [proposal
 tools](tool-contract.md#write-proposals), which stdio does not. It adds no
 `search` or `fetch` wrapper tools; OpenAI's [developer-mode
 guide](https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt)
@@ -43,37 +44,47 @@ explicit TOML file, given by absolute path, of at most 16 KiB. It ignores
 | `public_host` | required | The public MCP hostname, in lowercase, with at least one dot and at most 253 characters, without a scheme or port. |
 | `port` | `8000` | The loopback listener port, 1–65535. |
 | `allowed_origins` | `[]` | Exact `Origin` values: `http` or `https`, a host, and an optional port; no path (not even `/`), query, fragment, credentials, or wildcard. |
-| `write_proposals` | `false` | A boolean. `true` serves the write tools; it is valid only in `vault` mode. |
+| `vault_remote` | none | The vault remote's URL, `ssh://<user>@<host>[:<port>]/<path>`, with no password, query, or fragment. Setting it serves the proposal tools; it is valid only in `vault` mode. |
 
 `root` follows the [same rules as
 `KNOWLEDGE_ROOT`](tool-contract.md#configuration-and-common-policy). The
 values of `team_domain`, `audience`, `owner_subject`, and `public_host`, and
 each entry in `allowed_origins`, must be 1–1024 characters long, must not
 start or end with whitespace, and must not contain spaces, ASCII control
-characters, or DEL. An unknown field or a missing or invalid value stops
-startup with a fixed diagnostic.
+characters, or DEL. `vault_remote` must not contain whitespace or control
+characters, and an IPv6 host is written in brackets. An unknown field or a
+missing or invalid value stops startup with a fixed diagnostic.
 
 ## Launch modes
 
 `mode` has no default, and no other field or environment value selects a
-mode. Both modes serve the four read tools under the same gate, bounds, and
-logging; they differ in the startup check of `root` and in whether the write
-tools can be enabled.
+mode. Both modes serve the three read tools under the same gate, bounds, and
+logging; they differ in the startup check of `root` and in whether the
+proposal tools can be enabled.
 
 - **`synthetic`**: the root must pass the [synthetic
   guard](#synthetic-guard). Use it for service checks and troubleshooting
-  with the invented notes. It has no inbox: `write_proposals = true` is a
-  configuration error.
+  with the invented notes. Setting `vault_remote` is a configuration
+  error.
 - **`vault`**: the real-vault mode, for the [exposed
   scope](design-decisions.md#exposed-scope). Startup fails with
   `writable-root` if the process can write to the root directory, which stops
   a launch outside the read-only service unit. Only this mode may serve real
   notes, only for a scope that the vault owner has authorized, and no
-  copy-ready example enables it. With `write_proposals = true`, startup also
-  fails with `inbox` unless `<root>/inbox` is a real directory, not a
-  symlink, that the process can write to. The `writable-root` check still
-  applies, so the root itself stays read-only. The service creates
-  `inbox/.base/` when it first needs it.
+  copy-ready example enables it.
+
+When `vault_remote` is set, the launcher prepares the server's own bare
+repository, `vault.git` in the directory that the `STATE_DIRECTORY`
+environment variable names; the service unit sets it to
+`/var/lib/knowledge-server`. On every start, the launcher runs
+`git init --bare` there, which creates the repository or leaves an existing
+one in place, and copies the commit that the local vault checkout has
+checked out (`HEAD`), with its history, into the repository. Startup fails
+with `vault-remote` if any of these steps fails. Startup does not contact
+the vault remote. Fetches and pushes use the SSH key
+`/etc/knowledge-server/vault-remote-key` and the host keys in
+`/etc/knowledge-server/known_hosts`, which the [guide for web
+clients](use-with-web-clients.md#enable-write-proposals) installs.
 
 ## Synthetic guard
 
@@ -225,8 +236,8 @@ Startup categories, each followed by exit status 1:
 |---|---|
 | `configuration` | `--config` is missing, the file is unreadable or invalid, or the root fails the synthetic guard. |
 | `writable-root` | In `vault` mode, the process can write to the root directory. |
-| `inbox` | In `vault` mode with `write_proposals = true`, `<root>/inbox` is missing, is not a real directory, or is not writable by the process. |
 | `missing-ripgrep` | `rg` is not on `PATH`. |
+| `vault-remote` | `vault_remote` is set, and the server's own repository cannot be prepared: `STATE_DIRECTORY` is unset or not an absolute path, the directory is not writable, it is inside the local vault checkout, the root is not in a Git checkout, or the checkout's `HEAD` cannot be copied. |
 | `runtime` | The server could not start, for example because the port is in use, or it failed unexpectedly. |
 
 Event categories, each written before the line of the request it concerns:

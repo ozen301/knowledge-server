@@ -1,4 +1,4 @@
-"""Serve the four knowledge tools over HTTP behind an authorization gate.
+"""Serve the knowledge tools over HTTP behind an authorization gate.
 
 The MCP SDK's Streamable HTTP transport handles MCP at `/mcp`. Before it sees
 a request, the gate checks the `Host` and `Origin` headers and the Cloudflare
@@ -11,6 +11,7 @@ request body within a size and time limit.
 import asyncio
 import logging
 import time
+from pathlib import Path
 
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import Response
@@ -20,6 +21,7 @@ from knowledge_server.adapter.http_auth import AssertionVerifier, CachedKeys, Ke
 from knowledge_server.adapter.http_config import HTTPConfig
 from knowledge_server.adapter.http_logging import EVENT_FORMAT, REQUEST_FORMAT
 from knowledge_server.adapter.server import create_server
+from knowledge_server.core.git import SSH_COMMAND
 from knowledge_server.core.paths import PathPolicy
 
 MAX_BODY_BYTES = 1024 * 1024
@@ -257,7 +259,9 @@ def create_http_app(
     *,
     ripgrep: str,
     key_fetch: KeyFetch | None = None,
-    write_proposals: bool = False,
+    vault_remote: str | None = None,
+    state_directory: Path | None = None,
+    ssh_command: str | None = SSH_COMMAND,
 ) -> HTTPApplication:
     """Build the gated MCP HTTP application for the knowledge tools.
 
@@ -273,14 +277,21 @@ def create_http_app(
         ripgrep: The ripgrep executable used by knowledge search.
         key_fetch: Replaces the HTTPS signing-key fetch, for offline tests;
             None fetches from `config.jwks_url`.
-        write_proposals: Whether to serve the two write tools, which write
-            in the root's inbox.
+        vault_remote: Vault remote URL; configuring it enables proposal tools.
+        state_directory: Internal state directory; None uses STATE_DIRECTORY.
+        ssh_command: Remote SSH command; None disables it for local tests.
 
     Returns:
         The gate wrapping the SDK application. Run it with lifespan support,
         because the SDK prepares its request handling at lifespan startup.
     """
-    server = create_server(policy, ripgrep=ripgrep, write_proposals=write_proposals)
+    server = create_server(
+        policy,
+        ripgrep=ripgrep,
+        vault_remote=vault_remote,
+        state_directory=state_directory,
+        ssh_command=ssh_command,
+    )
     sdk_app = server.streamable_http_app(
         streamable_http_path="/mcp",
         json_response=True,

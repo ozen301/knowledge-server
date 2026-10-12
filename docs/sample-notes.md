@@ -111,14 +111,14 @@ cp -a tests/fixtures/vault /path/to/eval/vault
 mkdir -p /path/to/empty/dir && cd /path/to/empty/dir
 ```
 
-Claude Code, with only the four tools allowed. `mcp.json` holds the
+Claude Code, with only the three read tools allowed. `mcp.json` holds the
 `mcpServers.knowledge` entry with `KNOWLEDGE_ROOT=/path/to/eval/vault`. Leave
 out `--model` to use the account's default model.
 
 ```sh
 claude -p --model sonnet --tools "" --strict-mcp-config --mcp-config mcp.json \
   --allowedTools mcp__knowledge__knowledge_search mcp__knowledge__knowledge_read \
-    mcp__knowledge__knowledge_list mcp__knowledge__knowledge_info \
+    mcp__knowledge__knowledge_list \
   --output-format stream-json --verbose "PROMPT" < /dev/null > run.jsonl
 ```
 

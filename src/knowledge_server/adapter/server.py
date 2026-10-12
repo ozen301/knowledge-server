@@ -1,7 +1,7 @@
 """The knowledge tools, registered on an MCP SDK server.
 
-The four read tools are always served. The two write tools, which save
-proposals in the inbox, are served only when the caller enables them; the
+The three read tools are always served. The proposal tools, which use
+unreviewed branches, are served only when a vault remote is configured; the
 stdio entry point never does.
 
 Each tool validates its arguments with the request model, calls one core
@@ -31,14 +31,16 @@ from mcp.server.mcpserver.utilities.func_metadata import ArgModelBase, FuncMetad
 from mcp_types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from knowledge_server.core.git import SSH_COMMAND, ProposalBranches
 from knowledge_server.core.limits import DEFAULT_LIMITS, Limits
 from knowledge_server.core.models import (
     DomainErrorCode,
-    InfoRequest,
-    InfoResult,
     KnowledgeError,
+    ListProposalsRequest,
+    ListProposalsResult,
     ListRequest,
     ListResult,
+    ProposalReadRequest,
     ProposalResult,
     ProposeEditRequest,
     ProposeNoteRequest,
@@ -49,7 +51,7 @@ from knowledge_server.core.models import (
     invalid_argument_message,
 )
 from knowledge_server.core.paths import PathPolicy
-from knowledge_server.core.reader import list_directory, note_info, read_note
+from knowledge_server.core.reader import list_directory, read_note
 from knowledge_server.core.search import search_notes
 from knowledge_server.core.writer import propose_edit, propose_note
 
@@ -57,16 +59,12 @@ _logger = logging.getLogger(__name__)
 # The HTTP log filter recognizes this record by its format string.
 TOOL_FAILURE_FORMAT = "%s failed with %s%s"
 
-_INBOX_NOTICE = (
-    " Notes under inbox/ are unreviewed proposals, not yet part of the vault."
-)
 _WRITE_GUIDANCE = (
     " Before proposing, read AGENTS.md at the root with knowledge_read, if it "
     "exists, and follow its conventions for notes. Where it gives shell "
     "commands, search with the knowledge tools instead; skip Git steps and "
     "steps that run scripts. In note text, refer to other notes by their vault "
-    "path, never by an inbox/ path: the proposal inbox/P becomes P when "
-    "merged."
+    "path."
 )
 _SEARCH_DESCRIPTION = (
     "Find lines in the Markdown notes of the knowledge vault that contain any "
@@ -77,40 +75,39 @@ _SEARCH_DESCRIPTION = (
     "together. Matching ignores letter case unless case_sensitive is true. "
     "There is no regular expression, word splitting, or relevance ranking; "
     "narrow the path or queries when the result is truncated. Use "
-    "knowledge_read to read the lines around a match." + _INBOX_NOTICE
+    "knowledge_read to read the lines around a match."
 )
 _READ_DESCRIPTION = (
     "Read a range of whole lines from one Markdown note in the knowledge "
     "vault. Line numbers start at 1. Returns the lines, the actual range, the "
-    "total line count, and next_line for continuing a long note." + _INBOX_NOTICE
+    "total line count, and next_line for continuing a long note."
 )
 _LIST_DESCRIPTION = (
     "List one page of the visible notes and subdirectories directly inside a "
     "directory of the knowledge vault. An empty path lists the root. Use "
-    "next_offset to get the next page." + _INBOX_NOTICE
-)
-_INFO_DESCRIPTION = (
-    "Return metadata for one Markdown note in the knowledge vault: size, "
-    "modification time, line count, content hash, and whether the note can "
-    "be read and searched."
+    "next_offset to get the next page."
 )
 _PROPOSE_NOTE_DESCRIPTION = (
-    "Save a new Markdown note as a proposal for the knowledge vault. The note "
-    "is stored at inbox/<path> and becomes part of the vault only after the "
-    "user reviews and merges it. path is the vault path the note should "
-    "have, such as Projects/Plan.md. Fails if a note exists at that path in "
-    "the vault or the inbox." + _WRITE_GUIDANCE
+    "Save a new Markdown note as a proposal on an unreviewed branch of the "
+    "knowledge vault. The note becomes part of the vault only after the user "
+    "reviews and merges the branch. path is the vault path the note should "
+    "have, such as Projects/Plan.md; no note may exist there. Pass topic, a "
+    "short name for the change, to start a new proposal branch, or pass "
+    "proposal, a branch name that an earlier write or knowledge_list_proposals "
+    "returned, to add the note to that branch." + _WRITE_GUIDANCE
 )
 _PROPOSE_EDIT_DESCRIPTION = (
-    "Propose exact text replacements in a note of the knowledge vault. The "
-    "note changes only after the user reviews and merges the proposal. Read "
-    "the note first and pass its content_sha256 as base_sha256. Each old text "
-    "must occur exactly once in the text that knowledge_read shows, without "
-    "line numbers; if it occurs more than once, include surrounding lines "
-    "until it is unique. The edits apply in order, all or nothing. The first "
-    "proposal for a vault note is stored at inbox/<path>; make later changes "
-    "by editing that inbox path. Call this only when the user explicitly asks "
-    "to change a note and has agreed to the change, never on your own "
+    "Propose exact text replacements in a note of the knowledge vault, on an "
+    "unreviewed proposal branch. The note changes only after the user reviews "
+    "and merges the branch. Pass topic, a short name for the change, to start "
+    "a new proposal branch, or pass proposal, a branch name that an earlier "
+    "write or knowledge_list_proposals returned, to revise that branch. Read "
+    "the note first, with the same proposal for a revision, and pass its "
+    "content_sha256 as base_sha256. Each old text must occur exactly once in "
+    "the text that knowledge_read shows, without line numbers; if it occurs "
+    "more than once, include surrounding lines until it is unique. The edits "
+    "apply in order, all or nothing. Call this only when the user explicitly "
+    "asks to change a note and has agreed to the change, never on your own "
     "initiative." + _WRITE_GUIDANCE
 )
 
@@ -120,7 +117,9 @@ def create_server(
     *,
     ripgrep: str,
     limits: Limits = DEFAULT_LIMITS,
-    write_proposals: bool = False,
+    vault_remote: str | None = None,
+    state_directory: Path | None = None,
+    ssh_command: str | None = SSH_COMMAND,
 ) -> MCPServer:
     """Create a server that serves the knowledge tools.
 
@@ -132,30 +131,48 @@ def create_server(
         policy: The policy for the vault root.
         ripgrep: Path of the ripgrep executable.
         limits: Limits for every operation.
-        write_proposals: Whether to serve the two write tools, which write
-            in the root's inbox.
+        vault_remote: Vault remote URL; configuring it enables proposal tools.
+        state_directory: Internal state directory; None uses STATE_DIRECTORY.
+        ssh_command: Remote SSH command; None disables it for local tests.
 
     Returns:
         A server that has not started yet.
     """
+    proposal_branches = (
+        ProposalBranches(
+            policy,
+            vault_remote,
+            state_directory=state_directory,
+            limits=limits,
+            ssh_command=ssh_command,
+        )
+        if vault_remote is not None
+        else None
+    )
 
     async def search(request: SearchRequest) -> SearchResult:
         return await search_notes(policy, request, limits, ripgrep=ripgrep)
 
     async def read(request: ReadRequest) -> ReadResult:
+        if isinstance(request, ProposalReadRequest) and request.proposal is not None:
+            assert proposal_branches is not None
+            return await asyncio.to_thread(proposal_branches.read, request)
         return await asyncio.to_thread(read_note, policy, request, limits)
 
     async def list_(request: ListRequest) -> ListResult:
         return await asyncio.to_thread(list_directory, policy, request, limits)
 
-    async def info(request: InfoRequest) -> InfoResult:
-        return await asyncio.to_thread(note_info, policy, request, limits)
-
     async def note(request: ProposeNoteRequest) -> ProposalResult:
-        return await asyncio.to_thread(propose_note, policy, request, limits)
+        assert proposal_branches is not None
+        return await asyncio.to_thread(propose_note, proposal_branches, request, limits)
 
     async def edit(request: ProposeEditRequest) -> ProposalResult:
-        return await asyncio.to_thread(propose_edit, policy, request, limits)
+        assert proposal_branches is not None
+        return await asyncio.to_thread(propose_edit, proposal_branches, request, limits)
+
+    async def proposals(request: ListProposalsRequest) -> ListProposalsResult:
+        assert proposal_branches is not None
+        return await asyncio.to_thread(proposal_branches.list_proposals)
 
     tools = [
         _tool(
@@ -169,8 +186,14 @@ def create_server(
         _tool(
             "knowledge_read",
             "Read note",
-            _READ_DESCRIPTION,
-            ReadRequest,
+            _READ_DESCRIPTION
+            + (
+                " Pass proposal, a proposal branch name, to read the note's "
+                "unreviewed version on that branch."
+                if vault_remote is not None
+                else ""
+            ),
+            ProposalReadRequest if vault_remote is not None else ReadRequest,
             ReadResult,
             read,
         ),
@@ -182,17 +205,20 @@ def create_server(
             ListResult,
             list_,
         ),
-        _tool(
-            "knowledge_info",
-            "Note info",
-            _INFO_DESCRIPTION,
-            InfoRequest,
-            InfoResult,
-            info,
-        ),
     ]
-    if write_proposals:
+    if vault_remote is not None:
         tools += [
+            _tool(
+                "knowledge_list_proposals",
+                "List proposals",
+                "List the unreviewed proposal branches of the knowledge vault "
+                "and the notes that each one changes. Pass a branch name as "
+                "proposal to knowledge_read to read its version of a note, or "
+                "to a write tool to revise the branch.",
+                ListProposalsRequest,
+                ListProposalsResult,
+                proposals,
+            ),
             _tool(
                 "knowledge_propose_note",
                 "Propose note",
@@ -277,8 +303,12 @@ def _tool[RequestT: BaseModel, ResultT: BaseModel](
         name=name,
         title=title,
         description=description,
-        parameters=request_model.model_json_schema(),
-        fn_metadata=FuncMetadata(arg_model=_RawArguments, output_model=result_model),
+        parameters=_tool_schema(request_model),
+        fn_metadata=FuncMetadata(
+            arg_model=_RawArguments,
+            output_model=result_model,
+            output_schema=_tool_schema(result_model),
+        ),
         is_async=True,
         context_kwarg=None,
         annotations=ToolAnnotations(
@@ -289,6 +319,29 @@ def _tool[RequestT: BaseModel, ResultT: BaseModel](
             open_world_hint=False,
         ),
     )
+
+
+def _tool_schema(model: type[BaseModel]) -> dict[str, Any]:
+    """Remove generated model labels while retaining field documentation."""
+    schema = model.model_json_schema()
+
+    def clean(value: Any, *, model_schema: bool = False) -> None:
+        if isinstance(value, dict):
+            value.pop("title", None)
+            if model_schema:
+                value.pop("description", None)
+            for key, child in value.items():
+                if key == "$defs":
+                    for definition in child.values():
+                        clean(definition, model_schema=True)
+                else:
+                    clean(child)
+        elif isinstance(value, list):
+            for child in value:
+                clean(child)
+
+    clean(schema, model_schema=True)
+    return schema
 
 
 def _error_result(error: KnowledgeError) -> CallToolResult:

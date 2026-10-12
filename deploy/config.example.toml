@@ -10,4 +10,5 @@ owner_subject = "<verified-owner-sub>"
 public_host = "mcp.example.com"
 port = 8000
 allowed_origins = []
-write_proposals = false
+# To enable write proposals in vault mode, add the vault remote's SSH URL:
+# vault_remote = "ssh://<nas-user>@<nas-host>/<path-to-vault-remote>"

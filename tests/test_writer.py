@@ -1,535 +1,603 @@
-"""Tests for the write proposals: new notes and edits saved in the inbox."""
+"""Offline proposal tests using invented Git repositories."""
 
 import hashlib
-import os
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+from knowledge_server.core.git import ProposalBranches
 from knowledge_server.core.limits import DEFAULT_LIMITS, Limits
 from knowledge_server.core.models import (
     DomainErrorCode,
-    InfoRequest,
     KnowledgeError,
-    ListRequest,
+    ProposalResult,
     ProposeEditRequest,
     ProposeNoteRequest,
-    ReadRequest,
     TextEdit,
     invalid_argument_message,
 )
+from knowledge_server.core.models import (
+    ProposalReadRequest as ReadRequest,
+)
 from knowledge_server.core.paths import PathPolicy
-from knowledge_server.core.reader import list_directory, note_info, read_note
 from knowledge_server.core.writer import propose_edit, propose_note
 
-NOTE = "# Router\n\n- **RAM:** 16 GB\n- **Disk:** 1 TB\n"
+type ProposalVault = tuple[Path, Path, Path, Callable[..., bytes]]
 
 
-def _sha(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
+def _sha(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
 
 
-@pytest.fixture
-def root(tmp_path: Path) -> Path:
-    """A vault with one note, a symlinked directory, and an empty inbox."""
-    root = tmp_path / "vault"
-    (root / "homelab").mkdir(parents=True)
-    (root / "homelab" / "router.md").write_bytes(NOTE.encode())
-    (root / "inbox").mkdir()
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (root / "linked").symlink_to(outside)
-    return root
+def _store(
+    vault: ProposalVault, *, subtree: bool = False, limits: Limits = DEFAULT_LIMITS
+) -> ProposalBranches:
+    checkout, state, remote, _ = vault
+    return ProposalBranches(
+        PathPolicy(checkout / "subtree" if subtree else checkout),
+        str(remote),
+        state_directory=state,
+        limits=limits,
+        ssh_command=None,
+    )
 
 
-@pytest.fixture
-def policy(root: Path) -> PathPolicy:
-    """A policy for the vault fixture."""
-    return PathPolicy(root)
-
-
-def _outside_inbox(root: Path) -> dict[str, bytes]:
-    """Record every file outside the inbox, to show that writes leave it alone."""
-    return {
-        str(path.relative_to(root)): path.read_bytes()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-        and not path.is_symlink()
-        and path.relative_to(root).parts[0] != "inbox"
-    }
-
-
-def _inbox_files(root: Path) -> set[str]:
-    return {
-        str(path.relative_to(root / "inbox"))
-        for path in (root / "inbox").rglob("*")
-        if path.is_file()
-    }
-
-
-def _code(error: pytest.ExceptionInfo[KnowledgeError]) -> DomainErrorCode:
-    return error.value.code
+def _note(
+    store: ProposalBranches,
+    path: str = "new.md",
+    content: str = "new\n",
+    summary: str = "Add a note",
+    **selection: str,
+) -> ProposalResult:
+    return propose_note(
+        store,
+        ProposeNoteRequest(
+            path=path,
+            content=content,
+            summary=summary,
+            **(selection or {"topic": "test"}),
+        ),
+        store.limits,
+    )
 
 
 def _edit(
-    policy: PathPolicy,
-    path: str,
-    edits: list[tuple[str, str]],
-    base: str | None = None,
-    limits: Limits = DEFAULT_LIMITS,
-) -> str:
-    """Propose an edit against the current bytes unless a hash is given."""
-    if base is None:
-        base = _sha((policy.root / path).read_bytes())
-    request = ProposeEditRequest(
-        path=path,
-        base_sha256=base,
-        edits=[TextEdit(old=old, new=new) for old, new in edits],
-    )
-    result = propose_edit(policy, request, limits)
-    assert result.path == (path if path.startswith("inbox/") else f"inbox/{path}")
-    return result.content_sha256
-
-
-# New notes
-
-
-def test_new_note_is_written_to_the_inbox_only(root: Path, policy: PathPolicy) -> None:
-    """A new note goes to inbox/<path>, with its directories, and nowhere else."""
-    before = _outside_inbox(root)
-    result = propose_note(
-        policy, ProposeNoteRequest(path="plans/new/plan.md", content="# Plan\n")
-    )
-    written = root / "inbox" / "plans" / "new" / "plan.md"
-    assert written.read_bytes() == b"# Plan\n"
-    assert result.path == "inbox/plans/new/plan.md"
-    assert result.content_sha256 == _sha(b"# Plan\n")
-    assert _outside_inbox(root) == before
-    assert not (root / "plans").exists()
-    assert _inbox_files(root) == {"plans/new/plan.md"}
-
-
-def test_new_note_may_be_empty(policy: PathPolicy) -> None:
-    """Empty content is a valid note."""
-    result = propose_note(policy, ProposeNoteRequest(path="empty.md", content=""))
-    assert (policy.root / "inbox" / "empty.md").read_bytes() == b""
-    assert result.content_sha256 == _sha(b"")
-
-
-def test_new_note_never_overwrites(root: Path, policy: PathPolicy) -> None:
-    """An entry in the vault or the inbox, even a directory, blocks a new note."""
-    with pytest.raises(KnowledgeError) as vault_error:
-        propose_note(policy, ProposeNoteRequest(path="homelab/router.md", content="x"))
-    propose_note(policy, ProposeNoteRequest(path="idea.md", content="first"))
-    with pytest.raises(KnowledgeError) as inbox_error:
-        propose_note(policy, ProposeNoteRequest(path="idea.md", content="second"))
-    (root / "dir.md").mkdir()
-    with pytest.raises(KnowledgeError) as directory_error:
-        propose_note(policy, ProposeNoteRequest(path="dir.md", content="x"))
-    assert _code(vault_error) is DomainErrorCode.ALREADY_EXISTS
-    assert _code(inbox_error) is DomainErrorCode.ALREADY_EXISTS
-    assert _code(directory_error) is DomainErrorCode.ALREADY_EXISTS
-    assert (root / "inbox" / "idea.md").read_text() == "first"
-
-
-@pytest.mark.parametrize(
-    ("path", "code"),
-    [
-        ("inbox/idea.md", DomainErrorCode.INVALID_PATH),
-        ("../idea.md", DomainErrorCode.INVALID_PATH),
-        ("/idea.md", DomainErrorCode.INVALID_PATH),
-        ("plans//idea.md", DomainErrorCode.INVALID_PATH),
-        (".hidden/idea.md", DomainErrorCode.ACCESS_DENIED),
-        ("plans/idea.txt", DomainErrorCode.UNSUPPORTED_TYPE),
-        ("linked/idea.md", DomainErrorCode.ACCESS_DENIED),
-        ("homelab/router.md/idea.md", DomainErrorCode.NOT_A_DIRECTORY),
-    ],
-)
-def test_new_note_path_policy(
-    root: Path, policy: PathPolicy, path: str, code: DomainErrorCode
-) -> None:
-    """New-note paths follow the common policy and may not name the inbox."""
-    with pytest.raises(KnowledgeError) as error:
-        propose_note(policy, ProposeNoteRequest(path=path, content="x"))
-    assert _code(error) is code
-    assert _inbox_files(root) == set()
-    assert not any((root / "linked").iterdir())
-
-
-def test_new_note_rejects_a_symlink_in_the_inbox(
-    root: Path, policy: PathPolicy, tmp_path: Path
-) -> None:
-    """A symlink inside the inbox cannot redirect a write."""
-    (root / "inbox" / "plans").symlink_to(tmp_path / "outside")
-    with pytest.raises(KnowledgeError) as error:
-        propose_note(policy, ProposeNoteRequest(path="plans/idea.md", content="x"))
-    assert _code(error) is DomainErrorCode.ACCESS_DENIED
-    assert not any((tmp_path / "outside").iterdir())
-
-
-def test_new_note_removes_a_leftover_base_copy(root: Path, policy: PathPolicy) -> None:
-    """A new note never inherits the base copy of an earlier edit."""
-    leftover = root / "inbox" / ".base" / "old.md"
-    leftover.parent.mkdir()
-    leftover.write_text("old base")
-    propose_note(policy, ProposeNoteRequest(path="old.md", content="new"))
-    assert not leftover.exists()
-    assert _inbox_files(root) == {"old.md"}
-
-
-def test_new_note_result_size_limit(root: Path, policy: PathPolicy) -> None:
-    """A new note must fit the readable file-size limit."""
-    limits = replace(DEFAULT_LIMITS, max_file_bytes=4)
-    propose_note(policy, ProposeNoteRequest(path="fits.md", content="abcd"), limits)
-    with pytest.raises(KnowledgeError) as error:
-        propose_note(policy, ProposeNoteRequest(path="big.md", content="abcde"), limits)
-    assert _code(error) is DomainErrorCode.FILE_TOO_LARGE
-    assert _inbox_files(root) == {"fits.md"}
-
-
-# Edits
-
-
-def test_first_edit_keeps_a_base_copy(root: Path, policy: PathPolicy) -> None:
-    """The first edit writes the base copy and the proposal, not the vault note."""
-    before = _outside_inbox(root)
-    digest = _edit(policy, "homelab/router.md", [("16 GB", "32 GB ECC")])
-    proposal = root / "inbox" / "homelab" / "router.md"
-    assert proposal.read_text() == NOTE.replace("16 GB", "32 GB ECC")
-    assert (root / "inbox" / ".base" / "homelab" / "router.md").read_text() == NOTE
-    assert digest == _sha(proposal.read_bytes())
-    assert _outside_inbox(root) == before
-    assert _inbox_files(root) == {".base/homelab/router.md", "homelab/router.md"}
-
-
-def test_later_edits_change_the_proposal_and_keep_the_base(
-    root: Path, policy: PathPolicy
-) -> None:
-    """Editing the inbox path changes the proposal and keeps its base copy."""
-    digest = _edit(policy, "homelab/router.md", [("16 GB", "32 GB")])
-    _edit(policy, "inbox/homelab/router.md", [("1 TB", "2 TB")], base=digest)
-    proposal = root / "inbox" / "homelab" / "router.md"
-    assert proposal.read_text() == NOTE.replace("16 GB", "32 GB").replace(
-        "1 TB", "2 TB"
-    )
-    assert (root / "inbox" / ".base" / "homelab" / "router.md").read_text() == NOTE
-
-
-def test_vault_note_with_a_pending_proposal_is_refused(
-    root: Path, policy: PathPolicy
-) -> None:
-    """A vault path with a pending proposal must be edited through the inbox."""
-    _edit(policy, "homelab/router.md", [("16 GB", "32 GB")])
-    propose_note(policy, ProposeNoteRequest(path="idea.md", content="x"))
-    with pytest.raises(KnowledgeError) as pending:
-        _edit(policy, "homelab/router.md", [("1 TB", "2 TB")])
-    with pytest.raises(KnowledgeError) as new_note:
-        _edit(policy, "idea.md", [("x", "y")], base=_sha(b"x"))
-    assert _code(pending) is DomainErrorCode.PROPOSAL_PENDING
-    assert _code(new_note) is DomainErrorCode.PROPOSAL_PENDING
-    assert "inbox/" in pending.value.message
-    assert "router" not in pending.value.message
-
-
-def test_new_note_proposal_has_no_base_copy(root: Path, policy: PathPolicy) -> None:
-    """Editing a new-note proposal creates no base copy."""
-    propose_note(policy, ProposeNoteRequest(path="idea.md", content="one\n"))
-    _edit(policy, "inbox/idea.md", [("one", "two")])
-    assert (root / "inbox" / "idea.md").read_text() == "two\n"
-    assert _inbox_files(root) == {"idea.md"}
-
-
-def test_stale_hash_writes_nothing(root: Path, policy: PathPolicy) -> None:
-    """A hash that does not match the current bytes is refused."""
-    with pytest.raises(KnowledgeError) as error:
-        _edit(policy, "homelab/router.md", [("16 GB", "32 GB")], base="0" * 64)
-    assert _code(error) is DomainErrorCode.STALE_CONTENT
-    assert _inbox_files(root) == set()
-
-
-@pytest.mark.parametrize(
-    ("edits", "code", "position"),
-    [
-        ([("missing", "x")], DomainErrorCode.TEXT_NOT_FOUND, 1),
-        ([("16 GB", "x"), ("- **", "x")], DomainErrorCode.TEXT_NOT_UNIQUE, 2),
-        ([("16 GB", "1 TB"), ("1 TB", "x")], DomainErrorCode.TEXT_NOT_UNIQUE, 2),
-        ([("16 GB", "x"), ("16 GB", "y")], DomainErrorCode.TEXT_NOT_FOUND, 2),
-    ],
-)
-def test_text_to_replace_must_occur_exactly_once(
-    root: Path,
-    policy: PathPolicy,
-    edits: list[tuple[str, str]],
-    code: DomainErrorCode,
-    position: int,
-) -> None:
-    """Each edit sees the result of the earlier ones; a failure writes nothing."""
-    with pytest.raises(KnowledgeError) as error:
-        _edit(policy, "homelab/router.md", edits)
-    assert _code(error) is code
-    assert error.value.message.startswith(f"Edit {position}:")
-    assert _inbox_files(root) == set()
-
-
-def test_overlapping_occurrences_count(root: Path, policy: PathPolicy) -> None:
-    """An overlapping second occurrence makes a text not unique."""
-    (root / "aaa.md").write_text("aaa\n")
-    with pytest.raises(KnowledgeError) as error:
-        _edit(policy, "aaa.md", [("aa", "b")])
-    assert _code(error) is DomainErrorCode.TEXT_NOT_UNIQUE
-
-
-def test_edits_apply_in_order(root: Path, policy: PathPolicy) -> None:
-    """Each edit applies to the text that the earlier edits produced."""
-    _edit(
-        policy,
-        "homelab/router.md",
-        [("16 GB", "32 GB"), ("32 GB", "64 GB"), ("\n- **Disk:** 1 TB", "")],
-    )
-    assert (root / "inbox" / "homelab" / "router.md").read_text() == (
-        "# Router\n\n- **RAM:** 64 GB\n"
-    )
-
-
-def test_bom_and_crlf_are_preserved(root: Path, policy: PathPolicy) -> None:
-    """An edit keeps the note's BOM and CRLF line endings."""
-    raw = b"\xef\xbb\xbfone\r\ntwo\r\n"
-    (root / "windows.md").write_bytes(raw)
-    _edit(policy, "windows.md", [("one\ntwo", "one\nnew\ntwo")])
-    assert (root / "inbox" / "windows.md").read_bytes() == (
-        b"\xef\xbb\xbfone\r\nnew\r\ntwo\r\n"
-    )
-    assert (root / "inbox" / ".base" / "windows.md").read_bytes() == raw
-
-
-def test_lone_cr_survives_a_crlf_round_trip(root: Path, policy: PathPolicy) -> None:
-    """A lone CR, a character within a line, is written back unchanged."""
-    (root / "cr.md").write_bytes(b"a\rb\r\r\nc\r\n")
-    _edit(policy, "cr.md", [("c", "d")])
-    assert (root / "inbox" / "cr.md").read_bytes() == b"a\rb\r\r\nd\r\n"
-
-
-def test_mixed_line_endings_are_refused(root: Path, policy: PathPolicy) -> None:
-    """A note with both CRLF and LF endings cannot be edited."""
-    (root / "mixed.md").write_bytes(b"one\r\ntwo\n")
-    with pytest.raises(KnowledgeError) as error:
-        _edit(policy, "mixed.md", [("one", "x")])
-    assert _code(error) is DomainErrorCode.MIXED_LINE_ENDINGS
-    assert _inbox_files(root) == set()
-
-
-def test_missing_final_newline_stays_missing(root: Path, policy: PathPolicy) -> None:
-    """Edits do not add a final newline unless the new text does."""
-    (root / "open.md").write_bytes(b"one\ntwo")
-    _edit(policy, "open.md", [("two", "three")])
-    assert (root / "inbox" / "open.md").read_bytes() == b"one\nthree"
-    _edit(policy, "inbox/open.md", [("three", "three\n")])
-    assert (root / "inbox" / "open.md").read_bytes() == b"one\nthree\n"
-
-
-@pytest.mark.parametrize(
-    ("path", "code"),
-    [
-        ("homelab/missing.md", DomainErrorCode.NOT_FOUND),
-        ("inbox/missing.md", DomainErrorCode.NOT_FOUND),
-        ("inbox/.base/homelab/router.md", DomainErrorCode.ACCESS_DENIED),
-        ("homelab", DomainErrorCode.UNSUPPORTED_TYPE),
-        ("linked/note.md", DomainErrorCode.ACCESS_DENIED),
-        ("../router.md", DomainErrorCode.INVALID_PATH),
-    ],
-)
-def test_edit_path_policy(
-    root: Path, policy: PathPolicy, path: str, code: DomainErrorCode
-) -> None:
-    """Edit paths follow the common policy; base copies are hidden."""
-    with pytest.raises(KnowledgeError) as error:
-        _edit(policy, path, [("a", "b")], base="0" * 64)
-    assert _code(error) is code
-
-
-def test_edit_checks_the_vault_path_before_a_pending_proposal(
-    root: Path, policy: PathPolicy
-) -> None:
-    """An invalid vault path is reported even if a proposal exists for it."""
-    for path, code in (
-        ("C:/note.md", DomainErrorCode.INVALID_PATH),
-        ("linked/note.md", DomainErrorCode.ACCESS_DENIED),
-        ("homelab/router.md/note.md", DomainErrorCode.NOT_A_DIRECTORY),
-    ):
-        proposal = root / "inbox" / path
-        proposal.parent.mkdir(parents=True, exist_ok=True)
-        proposal.write_text("x")
-        with pytest.raises(KnowledgeError) as error:
-            _edit(policy, path, [("x", "y")], base=_sha(b"x"))
-        assert _code(error) is code
-
-
-def test_symlinked_base_directory_is_refused(
-    root: Path, policy: PathPolicy, tmp_path: Path
-) -> None:
-    """A symlink in place of the base directory cannot redirect a base copy."""
-    (root / "inbox" / ".base").symlink_to(tmp_path / "outside")
-    with pytest.raises(KnowledgeError) as error:
-        _edit(policy, "homelab/router.md", [("16 GB", "32 GB")])
-    assert _code(error) is DomainErrorCode.ACCESS_DENIED
-    assert not any((tmp_path / "outside").iterdir())
-    assert not (root / "inbox" / "homelab").exists()
-
-
-def test_unreadable_notes_cannot_be_edited(root: Path, policy: PathPolicy) -> None:
-    """Oversized or invalid notes return the read errors."""
-    (root / "binary.md").write_bytes(b"a\x00b")
-    (root / "big.md").write_bytes(b"12345")
-    limits = replace(DEFAULT_LIMITS, max_file_bytes=4)
-    with pytest.raises(KnowledgeError) as invalid:
-        _edit(policy, "binary.md", [("a", "b")])
-    with pytest.raises(KnowledgeError) as large:
-        _edit(policy, "big.md", [("1", "0")], limits=limits)
-    assert _code(invalid) is DomainErrorCode.INVALID_ENCODING
-    assert _code(large) is DomainErrorCode.FILE_TOO_LARGE
-
-
-def test_edit_result_size_limit(root: Path, policy: PathPolicy) -> None:
-    """The edited bytes, including a BOM, must fit the file-size limit."""
-    (root / "small.md").write_bytes(b"\xef\xbb\xbfa")
-    limits = replace(DEFAULT_LIMITS, max_file_bytes=4)
-    with pytest.raises(KnowledgeError) as error:
-        _edit(policy, "small.md", [("a", "ab")], limits=limits)
-    assert _code(error) is DomainErrorCode.FILE_TOO_LARGE
-    assert _inbox_files(root) == set()
-
-
-def test_injected_text_and_edit_limits(root: Path, policy: PathPolicy) -> None:
-    """The core applies injected text and edit limits."""
-    limits = replace(DEFAULT_LIMITS, max_write_text_bytes=4, max_edits=1)
-    propose_note(policy, ProposeNoteRequest(path="ok.md", content="é!!"), limits)
-    for call in (
-        lambda: propose_note(
-            policy, ProposeNoteRequest(path="no.md", content="éé!"), limits
+    store: ProposalBranches,
+    *,
+    path: str = "note.md",
+    raw: bytes = b"one\ntwo\n",
+    edits: list[TextEdit] | None = None,
+    **selection: str,
+) -> ProposalResult:
+    return propose_edit(
+        store,
+        ProposeEditRequest(
+            path=path,
+            summary="Revise a note",
+            base_sha256=_sha(raw),
+            edits=edits or [TextEdit(old="one", new="three")],
+            **(selection or {"topic": "test"}),
         ),
-        lambda: _edit(policy, "homelab/router.md", [("16 ", "32")], limits=limits),
-        lambda: _edit(
-            policy, "homelab/router.md", [("6", "8"), ("T", "G")], limits=limits
+        store.limits,
+    )
+
+
+def test_new_note_and_revision_leave_checkout_unchanged(
+    proposal_vault: ProposalVault,
+) -> None:
+    """A branch can add and revise several notes without writing to the checkout."""
+    checkout, _, remote, git = proposal_vault
+    before = git(checkout, "status", "--porcelain")
+    store = _store(proposal_vault)
+    note = _note(store, path="new/plan.md", summary=" 追加の計画 ")
+    assert git(remote, "cat-file", "commit", note.proposal).split(b"\n\n", 1)[1] == (
+        "Unreviewed proposal:  追加の計画 \n".encode()
+    )
+    assert note.path == "new/plan.md"
+    assert note.proposal.startswith("proposal/test-")
+    assert note.content_sha256 == _sha(b"new\n")
+    assert git(remote, "show", f"{note.proposal}:new/plan.md") == b"new\n"
+    edited = _edit(store, proposal=note.proposal)
+    revised = _edit(
+        store,
+        proposal=note.proposal,
+        raw=b"three\ntwo\n",
+        edits=[TextEdit(old="two", new="four")],
+    )
+    assert revised.proposal == edited.proposal == note.proposal
+    assert git(remote, "show", f"{note.proposal}:note.md") == b"three\nfour\n"
+    assert git(remote, "cat-file", "commit", note.proposal).split(b"\n\n", 1)[1] == (
+        b"Unreviewed proposal: Revise a note\n"
+    )
+    assert git(remote, "rev-list", "--count", f"main..{note.proposal}").strip() == b"3"
+    assert git(checkout, "status", "--porcelain") == before
+    assert (checkout / "note.md").read_bytes() == b"one\ntwo\n"
+    assert not (checkout / "new").exists()
+
+
+def test_new_branch_uses_head_not_working_tree(proposal_vault: ProposalVault) -> None:
+    """New writes base their checks on committed bytes, including dirty notes."""
+    checkout, _, remote, git = proposal_vault
+    (checkout / "note.md").write_text("dirty")
+    store = _store(proposal_vault)
+    result = _edit(store)
+    assert git(remote, "show", f"{result.proposal}:note.md") == b"three\ntwo\n"
+    assert (checkout / "note.md").read_text() == "dirty"
+    with pytest.raises(KnowledgeError, match="already exists") as error:
+        _note(store, path="note.md")
+    assert error.value.code == DomainErrorCode.ALREADY_EXISTS
+
+
+def test_edit_preserves_executable_mode(proposal_vault: ProposalVault) -> None:
+    """Edits retain the committed mode while new notes use mode 100644."""
+    checkout, _, remote, git = proposal_vault
+    (checkout / "note.md").chmod(0o755)
+    git(checkout, "add", "note.md")
+    git(checkout, "commit", "-m", "Executable note")
+    store = _store(proposal_vault)
+    note = _note(store)
+    edited = _edit(store, proposal=note.proposal)
+    assert (
+        git(remote, "ls-tree", edited.proposal, "--", "note.md").split()[0] == b"100755"
+    )
+    assert (
+        git(remote, "ls-tree", edited.proposal, "--", "new.md").split()[0] == b"100644"
+    )
+
+
+def test_subtree_prefix_and_listing(proposal_vault: ProposalVault) -> None:
+    """Branches use checkout paths, while reads and listings use root paths."""
+    _, _, remote, git = proposal_vault
+    store = _store(proposal_vault, subtree=True)
+    first = _note(store, path="計画/new.md")
+    _edit(
+        store,
+        raw=b"subtree\n",
+        edits=[TextEdit(old="subtree", new="changed")],
+        proposal=first.proposal,
+    )
+    assert git(remote, "show", f"{first.proposal}:subtree/計画/new.md") == b"new\n"
+    _note(_store(proposal_vault), path="subtree-other/new.md", proposal=first.proposal)
+    _note(_store(proposal_vault), path="outside.md", proposal=first.proposal)
+    listed = store.list_proposals()
+    assert listed.model_dump() == {
+        "proposals": [{"proposal": first.proposal, "paths": ["note.md", "計画/new.md"]}]
+    }
+    read = store.read(ReadRequest(path="note.md", proposal=first.proposal))
+    assert read.numbered_content == "1\tchanged\n"
+    assert read.path == "note.md"
+    git(remote, "update-ref", "-d", f"refs/heads/{first.proposal}")
+    assert store.list_proposals().proposals == []
+
+
+@pytest.mark.parametrize(
+    ("path", "code"),
+    [
+        ("../note.md", DomainErrorCode.INVALID_PATH),
+        (".hidden/secret.md", DomainErrorCode.ACCESS_DENIED),
+        ("link.md", DomainErrorCode.ACCESS_DENIED),
+        ("linked/note.md", DomainErrorCode.ACCESS_DENIED),
+        ("plain.txt", DomainErrorCode.UNSUPPORTED_TYPE),
+        ("note.md/new.md", DomainErrorCode.NOT_A_DIRECTORY),
+        ("missing.md", DomainErrorCode.NOT_FOUND),
+        ("subtree.md", DomainErrorCode.NOT_A_FILE),
+    ],
+)
+def test_branch_path_policy(
+    proposal_vault: ProposalVault, path: str, code: DomainErrorCode | None
+) -> None:
+    """Commit contents follow the root's policy, including symlink parents."""
+    checkout, _, _, git = proposal_vault
+    (checkout / "subtree.md").mkdir()
+    (checkout / "subtree.md" / "child.md").write_text("child")
+    git(checkout, "add", ".")
+    git(checkout, "commit", "-m", "Directory")
+    store = _store(proposal_vault)
+    branch = _note(store).proposal
+    for call in (
+        lambda: store.read(ReadRequest(path=path, proposal=branch)),
+        lambda: _edit(store, path=path, proposal=branch),
+    ):
+        with pytest.raises(KnowledgeError) as error:
+            call()
+        assert error.value.code == code
+    if code not in {DomainErrorCode.NOT_FOUND, DomainErrorCode.NOT_A_FILE}:
+        with pytest.raises(KnowledgeError) as error:
+            _note(store, path=path, proposal=branch)
+        assert error.value.code == code
+
+
+def test_missing_branch_and_safe_git_failure(proposal_vault: ProposalVault) -> None:
+    """A missing branch differs from a failed operation, with safe messages."""
+    _, state, _, _ = proposal_vault
+    store = _store(proposal_vault)
+    for call in (
+        lambda: _note(store, proposal="proposal/missing-ab12"),
+        lambda: store.read(
+            ReadRequest(path="note.md", proposal="proposal/missing-ab12")
         ),
     ):
         with pytest.raises(KnowledgeError) as error:
             call()
-        assert _code(error) is DomainErrorCode.INVALID_ARGUMENT
-    assert _inbox_files(root) == {"ok.md"}
-
-
-def test_no_temporary_files_remain(root: Path, policy: PathPolicy) -> None:
-    """Successful and failed writes leave no temporary files."""
-    propose_note(policy, ProposeNoteRequest(path="a.md", content="a\n"))
-    _edit(policy, "homelab/router.md", [("16 GB", "32 GB")])
-    with pytest.raises(KnowledgeError):
-        propose_note(policy, ProposeNoteRequest(path="a.md", content="b\n"))
-    names = {path.name for path in (root / "inbox").rglob("*")}
-    assert names == {"a.md", ".base", "homelab", "router.md"}
-
-
-def test_proposals_are_readable_and_base_copies_hidden(
-    root: Path, policy: PathPolicy
-) -> None:
-    """The read tools serve proposals with the hash an edit needs."""
-    digest = _edit(policy, "homelab/router.md", [("16 GB", "32 GB")])
-    read = read_note(policy, ReadRequest(path="inbox/homelab/router.md"))
-    assert read.content_sha256 == digest
-    assert "32 GB" in read.numbered_content
-    assert note_info(policy, InfoRequest(path="inbox/homelab/router.md")).readable
-    listing = list_directory(policy, ListRequest(path="inbox"))
-    assert [entry.path for entry in listing.entries] == ["inbox/homelab"]
+        assert error.value.code == DomainErrorCode.NOT_FOUND
+    store.vault_remote = str(state / "missing-private.git")
     with pytest.raises(KnowledgeError) as error:
-        read_note(policy, ReadRequest(path="inbox/.base/homelab/router.md"))
-    assert _code(error) is DomainErrorCode.ACCESS_DENIED
+        _note(store)
+    assert error.value.code == DomainErrorCode.GIT_FAILED
+    assert str(state) not in error.value.message
 
 
-def test_files_are_readable_by_other_accounts(root: Path, policy: PathPolicy) -> None:
-    """The vault owner reviews proposals without sudo under the default umask."""
-    previous = os.umask(0o022)
-    try:
-        _edit(policy, "homelab/router.md", [("16 GB", "32 GB")])
-    finally:
-        os.umask(previous)
-    for path in (root / "inbox").rglob("*"):
-        assert path.stat().st_mode & 0o004
+def test_branch_collision_does_not_overwrite(
+    proposal_vault: ProposalVault, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Even a repeated random suffix cannot overwrite an existing branch."""
+    monkeypatch.setattr(
+        "knowledge_server.core.writer.secrets.token_hex", lambda _: "abcd"
+    )
+    store = _store(proposal_vault)
+    first = _note(store, content="first")
+    with pytest.raises(KnowledgeError) as error:
+        _note(store, content="second")
+    assert error.value.code == DomainErrorCode.ALREADY_EXISTS
+    assert (
+        store.read(ReadRequest(path="new.md", proposal=first.proposal)).content_sha256
+        == first.content_sha256
+    )
 
 
-# Request validation
+def test_revision_lease_refuses_remote_race(
+    proposal_vault: ProposalVault, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A remote writer changing the fetched tip defeats the revision's lease."""
+    _, _, remote, git = proposal_vault
+    store = _store(proposal_vault)
+    first = _note(store)
+    original = store.commit_and_push
+    main = git(remote, "rev-parse", "main").decode().strip()
 
+    def raced(*args, **kwargs):
+        git(remote, "update-ref", f"refs/heads/{first.proposal}", main)
+        return original(*args, **kwargs)
 
-@pytest.mark.parametrize("text", ["a\x00b", "a\rb", "﻿a", "a﻿b"])
-def test_text_must_not_contain_nul_cr_or_bom(text: str) -> None:
-    """Text with NUL, CR, or U+FEFF is rejected without echoing it."""
-    for model, arguments in (
-        (ProposeNoteRequest, {"path": "a.md", "content": text}),
-        (
-            ProposeEditRequest,
-            {
-                "path": "a.md",
-                "base_sha256": "0" * 64,
-                "edits": [{"old": text, "new": ""}],
-            },
-        ),
-        (
-            ProposeEditRequest,
-            {
-                "path": "a.md",
-                "base_sha256": "0" * 64,
-                "edits": [{"old": "a", "new": text}],
-            },
-        ),
-    ):
-        with pytest.raises(ValidationError) as error:
-            model.model_validate(arguments)
-        message = invalid_argument_message(model, error.value)
-        assert "NUL, CR, or U+FEFF" in message
-        assert text not in message
+    monkeypatch.setattr(store, "commit_and_push", raced)
+    with pytest.raises(KnowledgeError) as error:
+        _edit(store, proposal=first.proposal)
+    assert error.value.code == DomainErrorCode.STALE_CONTENT
+    assert git(remote, "rev-parse", first.proposal).decode().strip() == main
 
 
 @pytest.mark.parametrize(
-    ("arguments", "named"),
+    ("raw", "edits", "expected", "code"),
     [
-        ({"base_sha256": "A" * 64}, "base_sha256"),
-        ({"base_sha256": "0" * 63}, "base_sha256"),
-        ({"edits": []}, "edits"),
         (
-            {"edits": [{"old": "a", "new": "b"}] * (DEFAULT_LIMITS.max_edits + 1)},
-            "edits",
+            b"\xef\xbb\xbfone\r\ntwo\r\n",
+            [TextEdit(old="one\ntwo", new="a\nb")],
+            b"\xef\xbb\xbfa\r\nb\r\n",
+            None,
         ),
-        ({"edits": [{"old": "", "new": "b"}]}, "edits"),
-        ({"edits": [{"old": "a"}]}, "edits"),
-        ({"edits": [{"old": "a", "new": "b", "extra": 1}]}, "edits"),
+        (b"a\rb\r\r\nc\r\n", [TextEdit(old="c", new="d")], b"a\rb\r\r\nd\r\n", None),
+        (b"one\ntwo", [TextEdit(old="two", new="three")], b"one\nthree", None),
+        (b"one\r\ntwo\n", None, None, DomainErrorCode.MIXED_LINE_ENDINGS),
+        (
+            b"aaa\n",
+            [TextEdit(old="aa", new="b")],
+            None,
+            DomainErrorCode.TEXT_NOT_UNIQUE,
+        ),
+        (
+            b"one\ntwo\n",
+            [TextEdit(old="absent", new="b")],
+            None,
+            DomainErrorCode.TEXT_NOT_FOUND,
+        ),
+        (
+            b"one\ntwo\n",
+            [TextEdit(old="one", new="two"), TextEdit(old="two", new="b")],
+            None,
+            DomainErrorCode.TEXT_NOT_UNIQUE,
+        ),
+        (b"a\x00b", None, None, DomainErrorCode.INVALID_ENCODING),
+        (b"\xff", None, None, DomainErrorCode.INVALID_ENCODING),
     ],
 )
-def test_edit_request_bounds(arguments: dict[str, object], named: str) -> None:
-    """Malformed hashes and edit lists name the rejected argument."""
-    valid = {
-        "path": "a.md",
-        "base_sha256": "0" * 64,
-        "edits": [{"old": "a", "new": ""}],
-    }
-    with pytest.raises(ValidationError) as error:
-        ProposeEditRequest.model_validate(valid | arguments)
-    assert named in invalid_argument_message(ProposeEditRequest, error.value)
+def test_edit_semantics(
+    proposal_vault: ProposalVault,
+    raw: bytes,
+    edits: list[TextEdit] | None,
+    expected: bytes | None,
+    code: DomainErrorCode | None,
+) -> None:
+    """Commit edits preserve the exact-replacement and encoding rules."""
+    checkout, _, remote, git = proposal_vault
+    (checkout / "note.md").write_bytes(raw)
+    git(checkout, "add", "note.md")
+    git(checkout, "commit", "--allow-empty", "-m", "Encoding fixture")
+    store = _store(proposal_vault)
+    if code:
+        with pytest.raises(KnowledgeError) as error:
+            _edit(store, raw=raw, edits=edits)
+        assert error.value.code == code
+        assert not store.list_proposals().proposals
+    else:
+        result = _edit(store, raw=raw, edits=edits)
+        assert expected is not None
+        assert git(remote, "show", f"{result.proposal}:note.md") == expected
+        read = store.read(ReadRequest(path="note.md", proposal=result.proposal))
+        assert read.content_sha256 == _sha(expected)
+        assert "\ufeff" not in read.numbered_content
 
 
-def test_request_text_limit_counts_utf8_bytes() -> None:
-    """The text limit counts UTF-8 bytes across all texts of a request."""
-    limit = DEFAULT_LIMITS.max_write_text_bytes
-    ProposeNoteRequest(path="a.md", content="a" * limit)
-    with pytest.raises(ValidationError):
-        ProposeNoteRequest(path="a.md", content="é" * (limit // 2 + 1))
-    half = "a" * (limit // 2)
-    ProposeEditRequest(
-        path="a.md", base_sha256="0" * 64, edits=[TextEdit(old=half, new=half)]
+def test_stale_hash_and_injected_limits(proposal_vault: ProposalVault) -> None:
+    """Stale hashes and request, result, listing, and read limits are enforced."""
+    store = _store(proposal_vault)
+    with pytest.raises(KnowledgeError) as error:
+        _edit(store, raw=b"stale")
+    assert error.value.code == DomainErrorCode.STALE_CONTENT
+    small = _store(proposal_vault, limits=replace(DEFAULT_LIMITS, max_file_bytes=4))
+    for call in (lambda: _note(small, content="12345"), lambda: _edit(small)):
+        with pytest.raises(KnowledgeError) as error:
+            call()
+        assert error.value.code == DomainErrorCode.FILE_TOO_LARGE
+    text = _store(
+        proposal_vault, limits=replace(DEFAULT_LIMITS, max_write_text_bytes=2)
     )
-    with pytest.raises(ValidationError) as error:
-        ProposeEditRequest(
-            path="a.md",
-            base_sha256="0" * 64,
-            edits=[TextEdit(old=half, new=half + "a")],
+    with pytest.raises(KnowledgeError) as error:
+        _note(text)
+    assert error.value.code == DomainErrorCode.INVALID_ARGUMENT
+    branch = _note(store, content="long line\n").proposal
+    with pytest.raises(KnowledgeError) as error:
+        small.read(ReadRequest(path="new.md", proposal=branch))
+    assert error.value.code == DomainErrorCode.FILE_TOO_LARGE
+    limited = _store(
+        proposal_vault, limits=replace(DEFAULT_LIMITS, max_proposal_entries=1)
+    )
+    with pytest.raises(KnowledgeError) as error:
+        limited.list_proposals()
+    assert error.value.code == DomainErrorCode.DIRECTORY_LIMIT_EXCEEDED
+
+
+def test_listing_filters_paths_and_uses_merge_base(
+    proposal_vault: ProposalVault,
+) -> None:
+    """Listing excludes invisible entries and includes deleted visible notes."""
+    checkout, _, _, git = proposal_vault
+    store = _store(proposal_vault)
+    branch = _note(store).proposal
+    git(checkout, "fetch", "origin", branch)
+    git(checkout, "checkout", "-b", branch, "FETCH_HEAD")
+    (checkout / "note.md").unlink()
+    (checkout / "subtree" / "note.md").unlink()
+    (checkout / "subtree").rmdir()
+    (checkout / "subtree").symlink_to("new.md")
+    (checkout / ".hidden" / "secret.md").write_text("changed")
+    (checkout / "plain.txt").write_text("changed")
+    (checkout / "new-link.md").symlink_to("new.md")
+    git(checkout, "add", ".")
+    git(checkout, "commit", "-m", "More changes")
+    git(checkout, "push", "origin", branch)
+    git(checkout, "checkout", "main")
+    (checkout / "subtree" / "later.md").write_text("main advanced")
+    git(checkout, "add", ".")
+    git(checkout, "commit", "-m", "Advance main")
+    git(checkout, "push", "origin", "main")
+    git(checkout, "push", "origin", "main:refs/heads/proposal/日本語-ab12")
+    assert store.list_proposals().proposals[0].paths == [
+        "new.md",
+        "note.md",
+        "subtree/note.md",
+    ]
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        {},
+        {"topic": "Upper"},
+        {"topic": "test\n"},
+        {"topic": "-bad"},
+        {"topic": "a--b"},
+        {"topic": "a" * 41},
+        {"proposal": "main"},
+        {"proposal": "proposal/topic-ABCD"},
+        {"proposal": "proposal/topic-abcd\n"},
+        {"topic": "a", "proposal": "proposal/a-abcd"},
+    ],
+)
+def test_selection_validation(selection: dict[str, str]) -> None:
+    """Unsafe branch arguments and ambiguous selections fail before Git."""
+    with pytest.raises(ValidationError):
+        ProposeNoteRequest(
+            path="new.md", content="text", summary="Add a note", **selection
         )
-    assert "256 KiB" in invalid_argument_message(ProposeEditRequest, error.value)
+
+
+@pytest.mark.parametrize("text", ["a\x00b", "a\rb", "\ufeffa", "a\ufeffb"])
+def test_write_text_validation(text: str) -> None:
+    """Text validation does not echo request values."""
+    with pytest.raises(ValidationError) as error:
+        ProposeNoteRequest(
+            path="new.md", content=text, summary="Add a note", topic="test"
+        )
+    message = invalid_argument_message(ProposeNoteRequest, error.value)
+    assert "NUL, CR, or U+FEFF" in message
+    assert text not in message
+
+
+@pytest.mark.parametrize("case", ["output", "local-timeout", "network-timeout"])
+def test_git_runner_bounds_and_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """The Git runner bounds both streams and reaps a stopped process."""
+    import os
+    import sys
+
+    from knowledge_server.core import git as git_module
+
+    pid_file = tmp_path / "pid"
+    executable = tmp_path / "git"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import os, time\n"
+        f'open({str(pid_file)!r}, "w").write(str(os.getpid()))\n'
+        'os.write(1, b"a" * 60)\n'
+        'os.write(2, b"b" * 60)\n'
+        "time.sleep(60)\n"
+    )
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    if case == "output":
+        monkeypatch.setattr(git_module, "MAX_OUTPUT_BYTES", 100)
+    else:
+        name = (
+            "NETWORK_DEADLINE_SECONDS"
+            if case == "network-timeout"
+            else "LOCAL_DEADLINE_SECONDS"
+        )
+        monkeypatch.setattr(git_module, name, 0.2)
+    with pytest.raises(KnowledgeError) as error:
+        git_module.run_git(tmp_path, [], network=case == "network-timeout")
+    assert error.value.code == DomainErrorCode.GIT_FAILED
+    if pid_file.exists():
+        with pytest.raises(ProcessLookupError):
+            os.kill(int(pid_file.read_text()), 0)
+
+
+def test_git_environment_isolation_and_subtree_safe_directory(
+    proposal_vault: ProposalVault, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Git gets fixed identity and only the checkout top-level ownership exception."""
+    from knowledge_server.core import git as git_module
+
+    checkout, state, remote, _ = proposal_vault
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "user.name")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "untrusted")
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "untrusted")
+    original = git_module.subprocess.Popen
+    calls = []
+
+    def recording(command, **kwargs):
+        calls.append((command, kwargs["env"]))
+        return original(command, **kwargs)
+
+    monkeypatch.setattr(git_module.subprocess, "Popen", recording)
+    store = ProposalBranches(
+        PathPolicy(checkout / "subtree"), str(remote), state_directory=state
+    )
+    result = _note(store)
+    store.list_proposals()
+    store.read(ReadRequest(path="new.md", proposal=result.proposal))
+    assert calls
+    for command, environment in calls:
+        assert environment["GIT_CONFIG_NOSYSTEM"] == "1"
+        assert environment["GIT_CONFIG_GLOBAL"] == "/dev/null"
+        assert environment["GIT_TERMINAL_PROMPT"] == "0"
+        assert environment["GIT_AUTHOR_NAME"] == "knowledge-server"
+        assert environment["GIT_COMMITTER_NAME"] == "knowledge-server"
+        assert "GIT_CONFIG_COUNT" not in environment
+        if str(remote) in command:
+            assert environment["GIT_SSH_COMMAND"] == (
+                "ssh -i /etc/knowledge-server/vault-remote-key -o IdentitiesOnly=yes "
+                "-o BatchMode=yes -o UserKnownHostsFile=/etc/knowledge-server/known_hosts"
+            )
+            assert "origin" not in command
+            if "fetch" in command:
+                assert "--prune" in command
+                assert any(":refs/vault/" in argument for argument in command)
+        else:
+            assert "GIT_SSH_COMMAND" not in environment
+        if "-c" in command:
+            assert command[command.index("-c") + 1] == f"safe.directory={checkout}"
+
+
+def test_invalid_proposal_does_not_run_git(
+    proposal_vault: ProposalVault, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core checks the branch namespace even when model validation is bypassed."""
+    from knowledge_server.core import git as git_module
+
+    store = _store(proposal_vault)
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("Invalid branch reached Git")
+
+    monkeypatch.setattr(git_module, "run_git", unexpected)
+    with pytest.raises(KnowledgeError) as error:
+        store.base("main")
+    assert error.value.code == DomainErrorCode.INVALID_ARGUMENT
+
+
+def test_internal_state_lifecycle(proposal_vault: ProposalVault) -> None:
+    """Each start imports HEAD and can recreate deleted server state."""
+    import shutil
+
+    checkout, state, _, git = proposal_vault
+    for attempt in range(3):
+        if attempt == 2:
+            shutil.rmtree(state)
+        store = _store(proposal_vault)
+        expected = git(checkout, "rev-parse", "HEAD").strip()
+        assert store.command("rev-parse", "refs/knowledge/checkout").strip() == expected
+        assert store.command("rev-parse", "--is-bare-repository").strip() == b"true"
+        assert store.command("remote") == b""
+        assert b"sshcommand" not in store.command("config", "--local", "--list").lower()
+        assert not (store.repository / "objects" / "info" / "alternates").exists()
+        result = _note(store, path=f"new-{attempt}.md")
+        assert (
+            git(store.repository, "rev-parse", "refs/knowledge/checkout").strip()
+            == expected
+        )
+        assert result.proposal
+        (checkout / "note.md").write_text(f"start {attempt}\n")
+        git(checkout, "add", ".")
+        git(checkout, "commit", "-m", "Advance checkout")
+
+
+def test_imported_objects_are_independent(proposal_vault: ProposalVault) -> None:
+    """Imported history and blobs remain readable without checkout objects."""
+    import shutil
+
+    checkout, _, _, _ = proposal_vault
+    store = _store(proposal_vault)
+    base = store.command("rev-parse", "refs/knowledge/checkout").decode().strip()
+    shutil.rmtree(checkout / ".git" / "objects")
+    assert store.load(base, "note.md")[0] == b"one\ntwo\n"
+    assert store.command("log", "--format=%s", base) == b"Invented notes\n"
+
+
+def test_new_proposal_uses_imported_oid(
+    proposal_vault: ProposalVault, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A checkout move after import cannot change the new proposal's base."""
+    from knowledge_server.core import git as git_module
+
+    checkout, _, remote, git = proposal_vault
+    store = _store(proposal_vault)
+    original = git_module.run_git
+    imports = []
+
+    def raced(directory, arguments, **kwargs):
+        result = original(directory, arguments, **kwargs)
+        if "fetch" in arguments and str(checkout) in arguments:
+            assert kwargs["network"] is True
+            assert arguments[arguments.index("-c") + 1] == f"safe.directory={checkout}"
+            assert git_module.PROPOSAL_LOCK.locked()
+            imports.append(git(checkout, "rev-parse", "HEAD").strip())
+            (checkout / "note.md").write_text("cron moved HEAD\n")
+            git(checkout, "add", ".")
+            git(checkout, "commit", "-m", "Cron move")
+        return result
+
+    monkeypatch.setattr(git_module, "run_git", raced)
+    # The write must refresh the startup import first.
+    (checkout / "other.md").write_text("new committed note\n")
+    git(checkout, "add", ".")
+    git(checkout, "commit", "-m", "After startup")
+    result = _edit(store)
+    assert len(imports) == 1
+    assert git(remote, "rev-parse", f"{result.proposal}^").strip() == imports[0]
+    assert git(remote, "show", f"{result.proposal}:note.md") == b"three\ntwo\n"
+    assert git(remote, "show", f"{result.proposal}:other.md") == b"new committed note\n"

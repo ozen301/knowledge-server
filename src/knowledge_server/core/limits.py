@@ -17,7 +17,7 @@ class Limits:
 
     Attributes:
         max_file_bytes: Largest file, in raw bytes, that read and search load.
-            Larger files can still be listed and inspected with info.
+            Larger files can still be listed.
         max_search_queries: Most queries in one search request.
         max_query_length: Longest search query, in code points.
         default_search_results: Number of search hits returned when the caller
@@ -47,6 +47,8 @@ class Limits:
         max_write_text_bytes: Most UTF-8 bytes of text in one write request:
             a new note's content, or all old and new texts of an edit request.
         max_edits: Most edits in one edit request.
+        max_proposal_entries: Most branch and changed-path entries scanned by
+            one proposal listing, before visibility filtering.
     """
 
     max_file_bytes: int = 1 * 1024 * 1024
@@ -67,6 +69,7 @@ class Limits:
     max_immediate_directory_entries: int = 10_000
     max_write_text_bytes: int = 256 * 1024
     max_edits: int = 100
+    max_proposal_entries: int = 10_000
 
 
 DEFAULT_LIMITS = Limits()

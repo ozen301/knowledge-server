@@ -40,7 +40,6 @@ def _hits(query: str) -> list[tuple[str, int]]:
     request = SearchRequest(queries=[query])
     result = asyncio.run(search_notes(POLICY, request, ripgrep=RG))
     assert not result.truncated
-    assert not result.incomplete
     return [(match.path, match.line) for match in result.matches]
 
 

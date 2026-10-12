@@ -2,6 +2,7 @@
 
 import re
 import tomllib
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -147,6 +148,31 @@ type LaunchMode = Literal["synthetic", "vault"]
 _MODES: tuple[LaunchMode, ...] = ("synthetic", "vault")
 
 
+def _vault_remote(value: object) -> bool:
+    if not isinstance(value, str) or any(
+        char.isspace() or unicodedata.category(char) == "Cc" for char in value
+    ):
+        return False
+    if (
+        re.fullmatch(
+            r"ssh://[^:/@?#]+@(?:\[[^\[\]]+\]|[^:/@?#]+)(?::[0-9]+)?/[^?#]+", value
+        )
+        is None
+    ):
+        return False
+    try:
+        parsed = urlsplit(value)
+        return (
+            bool(parsed.username)
+            and ":" not in parsed.username
+            and parsed.password is None
+            and bool(parsed.hostname)
+            and (parsed.port is None or 1 <= parsed.port <= 65535)
+        )
+    except ValueError:
+        return False
+
+
 @dataclass(frozen=True, slots=True)
 class LaunchConfig:
     """An explicitly selected launch mode, root, and HTTP settings.
@@ -157,14 +183,14 @@ class LaunchConfig:
             the mode's startup check to `root`.
         root: Resolved absolute path to the directory that the tools expose.
         http: The validated transport and authorization settings.
-        write_proposals: Whether to serve the write tools, which write in
-            `root/inbox`; only `vault` mode can enable them.
+        vault_remote: SSH URL of the vault remote; enables proposal tools
+            and is valid only in vault mode.
     """
 
     mode: LaunchMode
     root: Path
     http: HTTPConfig
-    write_proposals: bool = False
+    vault_remote: str | None = None
 
 
 def load_launch_config(path: Path) -> LaunchConfig:
@@ -172,8 +198,9 @@ def load_launch_config(path: Path) -> LaunchConfig:
 
     The file must set `mode` to `"synthetic"` or `"vault"`, `root`, and the
     required `HTTPConfig` fields; unknown fields are rejected, and no mode is
-    assumed. `write_proposals` is an optional boolean that only `vault` mode
-    may set to true. `KNOWLEDGE_ROOT` and `.env` files are not read, but `root`
+    assumed. The optional `vault_remote` SSH URL enables proposal tools
+    and is valid only in `vault` mode.
+    `KNOWLEDGE_ROOT` and `.env` files are not read, but `root`
     passes the same validation as `KNOWLEDGE_ROOT`.
 
     Args:
@@ -203,10 +230,12 @@ def load_launch_config(path: Path) -> LaunchConfig:
         origins = values.pop("allowed_origins", [])
         if not isinstance(origins, list):
             raise TypeError
-        write_proposals = values.pop("write_proposals", False)
-        if type(write_proposals) is not bool or (write_proposals and mode != "vault"):
+        vault_remote = values.pop("vault_remote", None)
+        if vault_remote is not None and (
+            mode != "vault" or not _vault_remote(vault_remote)
+        ):
             raise ValueError
         http = HTTPConfig(**values, allowed_origins=tuple(origins))
-        return LaunchConfig(mode, root, http, write_proposals)
+        return LaunchConfig(mode, root, http, vault_remote)
     except OSError, ValueError, TypeError, KeyError, ConfigurationError:
         raise ConfigurationError("HTTP configuration is invalid.") from None

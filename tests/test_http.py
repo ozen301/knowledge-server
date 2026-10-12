@@ -10,7 +10,7 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -37,6 +37,8 @@ from knowledge_server.adapter.server import create_server
 from knowledge_server.adapter.synthetic import verify_synthetic_root
 from knowledge_server.config import ConfigurationError
 from knowledge_server.core.paths import PathPolicy
+
+type ProposalVault = tuple[Path, Path, Path, Callable[..., bytes]]
 
 FIXTURES = Path(__file__).parent / "fixtures" / "vault"
 _FOUND_RG = shutil.which("rg")
@@ -642,7 +644,7 @@ def test_http_stdio_schemas_and_results(
     http_logs: io.StringIO,
     host: str,
 ) -> None:
-    """Stateless HTTP initializes and serves the same four schemas and results.
+    """Stateless HTTP initializes and serves the same three schemas and results.
 
     The application runs inside its lifespan, and a public Host in any letter
     case passes both the gate's and the SDK's Host checks.
@@ -659,7 +661,6 @@ def test_http_stdio_schemas_and_results(
         ("knowledge_search", {"queries": [SENTINEL]}),
         ("knowledge_read", {"path": "note.md"}),
         ("knowledge_list", {}),
-        ("knowledge_info", {"path": "note.md"}),
         ("knowledge_read", {"path": "../outside.md"}),
         ("knowledge_read", {"path": "note.md", "start_line": "1"}),
         (SENTINEL, {"private": SENTINEL}),
@@ -807,25 +808,77 @@ def test_explicit_launch_configuration_and_guard(
             load_launch_config(path)
 
 
-def test_write_proposals_setting(tmp_path: Path) -> None:
-    """Only `vault` mode can enable the write tools, with a boolean."""
+def test_vault_remote_setting(tmp_path: Path) -> None:
+    """Only an explicit SSH URL in vault mode enables proposal access."""
     root = tmp_path / "invented"
     shutil.copytree(FIXTURES, root)
     path = tmp_path / "config.toml"
     path.write_text(_config_text(root, "vault"), encoding="utf-8")
-    assert load_launch_config(path).write_proposals is False
-    path.write_text(
-        _config_text(root, "vault") + "write_proposals = true\n", encoding="utf-8"
-    )
-    assert load_launch_config(path).write_proposals is True
-    for text in (
-        _config_text(root, "synthetic") + "write_proposals = true\n",
-        _config_text(root, "vault") + 'write_proposals = "true"\n',
-        _config_text(root, "vault") + "write_proposals = 1\n",
+    assert load_launch_config(path).vault_remote is None
+    for remote in (
+        "ssh://git@vault.example.com/notes.git",
+        "ssh://owner@vault.example.com:1/notes.git",
+        "ssh://owner@vault.example.com:65535/notes.git",
+        "ssh://git@[2001:db8::1]:22/notes.git",
+        "ssh://git@vault.example.com/日本語.git",
     ):
-        path.write_text(text, encoding="utf-8")
+        path.write_text(
+            _config_text(root, "vault")
+            + f"vault_remote = {json.dumps(remote, ensure_ascii=False)}\n"
+        )
+        assert load_launch_config(path).vault_remote == remote
+    for setting in (
+        "vault_remote = true",
+        "vault_remote = 1",
+        "write_proposals = true",
+        "write_proposals = false",
+        'vault_repo = "/tmp/server.git"',
+        'proposal_repository = "/tmp/server.git"',
+        *(
+            f"vault_remote = {json.dumps(remote, ensure_ascii=False)}"
+            for remote in (
+                "",
+                "relative.git",
+                "/tmp/local.git",
+                "git@vault.example.com:notes.git",
+                "https://git@vault.example.com/notes.git",
+                "SSH://git@vault.example.com/notes.git",
+                "ssh://vault.example.com/notes.git",
+                "ssh://@vault.example.com/notes.git",
+                "ssh://git:password@vault.example.com/notes.git",
+                "ssh://git:@vault.example.com/notes.git",
+                "ssh://git@/notes.git",
+                "ssh://git@vault.example.com",
+                "ssh://git@vault.example.com/",
+                "ssh://git@vault.example.com:/notes.git",
+                "ssh://git@vault.example.com:0/notes.git",
+                "ssh://git@vault.example.com:65536/notes.git",
+                "ssh://git@vault.example.com:-1/notes.git",
+                "ssh://git@vault.example.com:abc/notes.git",
+                "ssh://git@vault.example.com:２２/notes.git",
+                "ssh://git@vault.example.com/notes.git?query",
+                "ssh://git@vault.example.com/notes.git?",
+                "ssh://git@vault.example.com/notes.git#fragment",
+                "ssh://git@vault.example.com/notes.git#",
+                "ssh://git@vault.example.com/a b",
+                "ssh://git@vault.example.com/a\tb",
+                "ssh://git@vault.example.com/a\nb",
+                "ssh://git@vault.example.com/a\x7fb",
+                "ssh://git@vault.example.com/a\u009fb",
+                "ssh://git@vault.example.com/a\u00a0b",
+                "ssh://git@@vault.example.com/notes.git",
+            )
+        ),
+    ):
+        path.write_text(_config_text(root, "vault") + setting + "\n", encoding="utf-8")
         with pytest.raises(ConfigurationError):
             load_launch_config(path)
+    path.write_text(
+        _config_text(root, "synthetic")
+        + 'vault_remote = "ssh://git@vault.example.com/notes.git"\n'
+    )
+    with pytest.raises(ConfigurationError):
+        load_launch_config(path)
 
 
 @pytest.mark.parametrize("change", ["modify", "extra", "missing", "symlink", "fifo"])
@@ -1652,48 +1705,109 @@ def test_tool_failure_event(
         assert private not in output
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root can write to any directory")
-@pytest.mark.parametrize("inbox", ["missing", "file", "symlink", "read-only"])
-def test_vault_mode_with_write_proposals_needs_a_writable_inbox(
-    tmp_path: Path, inbox: str
+@pytest.mark.parametrize(
+    "state",
+    ["missing", "relative", "file", "read-only", "bad-checkout", "bad-repository"],
+)
+def test_proposal_startup_state_failures(
+    tmp_path: Path,
+    proposal_vault: ProposalVault,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    state: str,
 ) -> None:
-    """The launcher stops with `inbox` unless the inbox is a writable directory.
+    """Unusable state or failed imports use the vault-remote startup category."""
+    from knowledge_server.adapter import http_main
 
-    The root itself is read-only, so the `writable-root` check passes.
-    """
-    root = tmp_path / "invented"
-    shutil.copytree(FIXTURES, root)
-    target = root / "inbox"
-    if inbox == "file":
-        target.write_text("", encoding="utf-8")
-    elif inbox == "symlink":
-        (tmp_path / "elsewhere").mkdir()
-        target.symlink_to(tmp_path / "elsewhere")
-    elif inbox == "read-only":
-        target.mkdir(mode=0o555)
+    root, state_directory, _, _ = proposal_vault
+    if state == "missing":
+        monkeypatch.delenv("STATE_DIRECTORY")
+    elif state == "relative":
+        monkeypatch.setenv("STATE_DIRECTORY", "relative")
+    elif state == "file":
+        state_directory.write_text("")
+    elif state == "read-only":
+        if os.geteuid() == 0:
+            pytest.skip("root can write to any directory")
+        state_directory.mkdir()
+        state_directory.chmod(0o555)
+    elif state == "bad-checkout":
+        shutil.rmtree(root / ".git")
+    else:
+        state_directory.mkdir()
+        (state_directory / "vault.git").write_text("")
     configuration = tmp_path / "config.toml"
     configuration.write_text(
-        _config_text(root, "vault") + "write_proposals = true\n", encoding="utf-8"
+        _config_text(root, "vault")
+        + 'vault_remote = "ssh://git@vault.example.com/notes.git"\n'
     )
-    root.chmod(0o555)
+    original_access = http_main.os.access
+    monkeypatch.setattr(
+        http_main.os,
+        "access",
+        lambda path, mode: (
+            False
+            if Path(path) == root and mode & os.W_OK
+            else original_access(path, mode)
+        ),
+    )
+    monkeypatch.setattr(http_main, "configure_http_logging", lambda: None)
+    calls = []
+    monkeypatch.setattr(
+        http_main.uvicorn, "run", lambda *args, **kwargs: calls.append(kwargs)
+    )
     try:
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "knowledge_server.adapter.http_main",
-                "--config",
-                str(configuration),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=10,
-        )
+        assert http_main.main(["--config", str(configuration)]) == 1
     finally:
-        root.chmod(0o755)
-        if inbox == "read-only":
-            target.chmod(0o755)
-    assert result.returncode == 1
-    assert result.stdout == ""
-    assert result.stderr == "knowledge-server-http startup category=inbox\n"
+        if state == "read-only":
+            state_directory.chmod(0o755)
+    assert not calls
+    assert "category=vault-remote" in caplog.text
+
+
+def test_proposal_startup_does_not_contact_remote(
+    tmp_path: Path,
+    proposal_vault: ProposalVault,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Startup only initializes state and imports the local checkout."""
+    from knowledge_server.adapter import http_main
+    from knowledge_server.core import git as git_module
+
+    root, state, _, _ = proposal_vault
+    configuration = tmp_path / "config.toml"
+    configuration.write_text(
+        _config_text(root, "vault")
+        + 'vault_remote = "ssh://git@unreachable.example.com/notes.git"\n'
+    )
+    original_access = http_main.os.access
+    monkeypatch.setattr(
+        http_main.os,
+        "access",
+        lambda path, mode: (
+            False
+            if Path(path) == root and mode & os.W_OK
+            else original_access(path, mode)
+        ),
+    )
+    monkeypatch.setattr(http_main, "configure_http_logging", lambda: None)
+    calls = []
+    monkeypatch.setattr(
+        http_main.uvicorn, "run", lambda *args, **kwargs: calls.append(kwargs)
+    )
+    original_git = git_module.run_git
+    commands = []
+
+    def local_only(directory, arguments, **kwargs):
+        commands.append(arguments)
+        assert all("ssh://" not in argument for argument in arguments)
+        assert "GIT_SSH_COMMAND" not in (kwargs.get("extra_env") or {})
+        return original_git(directory, arguments, **kwargs)
+
+    monkeypatch.setattr(git_module, "run_git", local_only)
+    assert http_main.main(["--config", str(configuration)]) == 0
+    assert len(calls) == 1
+    assert calls[0]["host"] == "127.0.0.1"
+    assert (state / "vault.git").is_dir()
+    assert sum("init" in command for command in commands) == 1
+    assert sum("fetch" in command for command in commands) == 1

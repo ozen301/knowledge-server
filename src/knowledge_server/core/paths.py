@@ -119,7 +119,7 @@ class PathPolicy:
                 `UNSUPPORTED_TYPE`, `NOT_FOUND`, `NOT_A_FILE`, or
                 `NOT_A_DIRECTORY` as the contract's error mappings define.
         """
-        components, trailing_slash = self._parse(api_path, target)
+        components, trailing_slash = self.parse(api_path, target)
         if not components:
             return ResolvedPath(self.root, "", TargetKind.DIRECTORY)
         # Inspect each component with lstat before descending into it, so a
@@ -145,48 +145,12 @@ class PathPolicy:
             if actual_kind is TargetKind.FILE:
                 raise KnowledgeError(DomainErrorCode.NOT_A_DIRECTORY)
         # For an EITHER target, any visible directory is accepted, but a file
-        # must still be Markdown. (For FILE targets, _parse checked the suffix.)
+        # must still be Markdown. (For FILE targets, parse checked the suffix.)
         elif actual_kind is TargetKind.FILE and not current.name.lower().endswith(
             ".md"
         ):
             raise KnowledgeError(DomainErrorCode.UNSUPPORTED_TYPE)
         return ResolvedPath(current, "/".join(components), actual_kind)
-
-    def probe_file(self, api_path: str) -> bool:
-        """Check a file path that need not exist, and report whether it does.
-
-        The path's form, hidden names, and Markdown suffix are checked as for
-        a `FILE` target of `resolve`. Then each existing component is
-        inspected with lstat, as `resolve` does; the first missing component
-        ends the check.
-
-        Args:
-            api_path: Path relative to the root, using "/".
-
-        Returns:
-            True if an entry of any kind exists at the path.
-
-        Raises:
-            KnowledgeError: With `INVALID_PATH`, `ACCESS_DENIED`,
-                `UNSUPPORTED_TYPE`, or `NOT_A_DIRECTORY` as the contract's
-                error mappings define.
-        """
-        components, _ = self._parse(api_path, TargetKind.FILE)
-        current = self.root
-        for index, component in enumerate(components):
-            current = current / component
-            try:
-                mode = self._lstat_mode(current)
-            except KnowledgeError as error:
-                if error.code is DomainErrorCode.NOT_FOUND:
-                    return False
-                raise
-            if stat.S_ISLNK(mode) or not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
-                raise KnowledgeError(DomainErrorCode.ACCESS_DENIED)
-            self._check_contained(current)
-            if index < len(components) - 1 and not stat.S_ISDIR(mode):
-                raise KnowledgeError(DomainErrorCode.NOT_A_DIRECTORY)
-        return True
 
     def discover_immediate(self, api_path: str) -> tuple[VisibleEntry, ...]:
         """Return a directory's visible immediate children, sorted by path.
@@ -224,8 +188,12 @@ class PathPolicy:
             raise KnowledgeError(DomainErrorCode.ACCESS_DENIED) from None
         return tuple(sorted(entries, key=lambda entry: entry.relative_path))
 
-    def _parse(self, api_path: str, target: TargetKind) -> tuple[list[str], bool]:
-        """Check a path's form without touching the filesystem.
+    def parse(self, api_path: str, target: TargetKind) -> tuple[list[str], bool]:
+        """Check lexical form, hidden components, and suffix without filesystem access.
+
+        Args:
+            api_path: Root-relative API path.
+            target: Kind of accepted object.
 
         Returns:
             The path components and whether the path had a trailing slash.

@@ -62,26 +62,36 @@ abstraction before a second backend exists.
    such guidance is the server's MCP instructions, but Claude.ai does not
    pass them to the model, while both ChatGPT and Claude.ai pass tool
    descriptions. The exception is acceptable because only the vault owner
-   commits to the vault: a proposal for `AGENTS.md` is saved at
-   `inbox/AGENTS.md`, which the read tools describe as unreviewed.
-6. **Keep operational state separate.** Future indexes and caches live outside
-   both the vault and the source repository. The inbox and its base copies
-   are not operational state but pending note content, which cannot be
-   rebuilt. They stay in the checkout so that the read tools serve proposals
-   under the same path policy. Git ignores the inbox, and a proposal is not
-   part of the knowledge vault until the vault owner merges it.
+   merges into `main`: a proposal for `AGENTS.md` stays on its unreviewed
+   branch, and the read tools return it only when the agent names that
+   branch.
+6. **Keep operational state separate.** Operational state, such as future
+   indexes and caches and the server's Git repository for proposals, lives
+   outside both the vault and the source repository and can be rebuilt.
+   Proposals are not operational state but pending note content, which
+   cannot be rebuilt. They live on branches of the vault remote, so
+   that the vault owner can review them in any clone.
 7. **Use ripgrep for initial literal search.** Its integration must use the
    shared file policy, bounded subprocess output, deadlines, and cancellation.
    ripgrep is the current implementation choice, not a permanent requirement;
    [existing implementation choices](#existing-implementation-choices) states
    when to reconsider it.
-8. **Writes are proposals that the vault owner reviews.** The service never
-   changes a canonical note. Over HTTP, an agent can save a new note or an
-   edit as a [proposal](tool-contract.md#write-proposals) in the inbox; it
-   takes effect only when the vault owner merges it into the knowledge vault.
+8. **Writes are proposals that the vault owner reviews.** The service
+   never changes a canonical note. Over HTTP, an agent can save new notes
+   and edits as a [proposal](tool-contract.md#write-proposals), a branch of
+   the vault remote; it takes effect only when the vault owner merges it
+   into `main`. A new proposal starts from the commit of the local vault
+   checkout, so that the vault owner can merge it like any other branch.
    Local hosts can edit the vault directly, so stdio stays read-only. The
-   service unit, not only the path policy, limits the service's writes to
-   the inbox.
+   service unit, not only the path policy, keeps the local vault checkout
+   read-only.
+
+The server pushes proposals with an SSH key of the service account, and a
+plain SSH Git remote cannot limit a key to some branches. A compromised
+server could therefore change `main`. Unreviewed text also stays in the
+history of the vault remote, its backups, and every clone that fetched a
+proposal branch, even after the branch is deleted. The vault owner accepts
+both risks, so that proposals can be reviewed in any clone with Git alone.
 
 The design assumes that the vault owner controls the local vault checkout and
 that concurrent edits are trusted. Path checks and symlink rejection protect
@@ -158,9 +168,9 @@ application's logs, not those of Cloudflare or the providers.
 Text that a client writes is untrusted, like note text. A proposal can hold
 anything the conversation produced, including instructions that a note or a
 web page injected. It reaches the knowledge vault only through the vault
-owner's review of the diff, and the read tools describe inbox notes as
-unreviewed. Proposal text crosses Cloudflare and the provider like excerpts
-do.
+owner's review of the diff, and the read tools return proposal text only
+when the agent names a proposal branch. Proposal text crosses Cloudflare and
+the provider like excerpts do.
 
 Because these parties see note text, real notes are served only after the
 vault owner has reviewed them and the client account's training, retention,
@@ -191,12 +201,13 @@ authentication, path, key-cache, resource, or logging protections, which are
 part of remote exposure, not later cleanup. Investigate capacity or
 performance only if ordinary use reveals errors or unacceptable delays.
 
-Each write request is bounded, but the inbox has no bound on its total size
-or number of proposals. Only the vault owner can call the tools, and the
-vault owner deletes merged proposals. A full inbox can fill the VM's disk,
-but it cannot change a canonical note. Do not rely on the client to confirm
-writes: ChatGPT has written without asking when the vault owner had asked it
-to write.
+Each write request and proposal listing is bounded, but nothing bounds the
+total size or number of proposals. Only the vault owner can call the tools,
+and the vault owner deletes merged and rejected branches. Objects that
+accumulate in the server's repository can fill the VM's disk, but they
+cannot change a canonical note. Do not rely on the client to confirm writes:
+ChatGPT has written without asking when the vault owner had asked it to
+write.
 
 ### VM services and network
 
@@ -205,29 +216,33 @@ communicate over loopback; the [guide for web
 clients](use-with-web-clients.md) installs and operates them. No containers
 or hypervisor-specific configuration are needed.
 
-- **Synchronization.** The server never runs Git. A cron job of the vault
-  owner's account fast-forwards a dedicated checkout, so synchronization
-  stays under the vault owner's control, and a diverged history stops the
-  pull instead of merging. A bare Git remote alone cannot serve as the
-  readable collection. Add snapshot machinery only for a demonstrated need.
-- **Merging proposals.** The review script, `deploy/review-proposals`,
-  applies proposals to a separate clone of the vault remote, which the
-  server never reads, so unreviewed text is never served. The vault owner
-  commits and pushes there, so the account's key needs push access, and the
-  cron pull brings the result to the local vault checkout. The server keeps
-  running during the review; the script stops it only while it deletes
-  reviewed proposals, so that no write can interleave with the deletion. It
-  uses a plain clone rather than a Git worktree of the local vault checkout,
-  because Git does not check out `main` in two worktrees.
+- **Synchronization.** A cron job of the vault owner's account fast-forwards
+  a dedicated checkout, so synchronization stays under the vault owner's
+  control, and a diverged history stops the pull instead of merging. The
+  server only reads the checkout. A bare Git remote alone cannot serve as
+  the readable collection. Add snapshot machinery only for a demonstrated
+  need.
+- **Merging proposals.** The server only reads the local vault checkout, so
+  it creates proposal commits in a bare Git repository of its own and pushes
+  them to the vault remote. It copies the checkout's history into that
+  repository instead of borrowing the checkout's objects through a Git
+  object alternate, because garbage collection in the checkout could delete
+  borrowed objects that the server still needs. The copy costs about as much
+  disk space as the checkout's history. The repository holds nothing that
+  exists only there once a push succeeds, so it can be deleted while the
+  server is stopped, and the next start rebuilds it. The vault owner merges
+  or deletes proposal branches in any clone, and the cron pull brings the
+  merged notes to the local vault checkout. The review needs no session on
+  the VM and no server stop.
 
 ### Exposed scope
 
 The root is explicit configuration. It can be the whole checkout or one
-subtree, with read-only access for the server except in the inbox when write
-proposals are enabled; tool paths and citations are relative to that root.
-A selection spread across several directories needs its own design. Only
-`vault` mode serves real notes, and only for a scope that the vault owner has
-authorized; a change of scope needs a new authorization.
+subtree, with read-only access for the server; tool paths and citations are
+relative to that root. A selection spread across several directories needs
+its own design. Only `vault` mode serves real notes, and only for a scope
+that the vault owner has authorized; a change of scope needs a new
+authorization.
 
 ## Shutdown and revocation
 
