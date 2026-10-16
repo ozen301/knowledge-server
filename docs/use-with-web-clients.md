@@ -347,10 +347,11 @@ can then delete `/var/lib/knowledge-server/vault.git`.
 
    ChatGPT uses the connector's description to decide when to call the
    tools. This example tells it when to search, how literal search works,
-   and how proposals behave. Adapt it to your notes.
+   how proposals behave, and where the note conventions are. Adapt it to
+   your notes.
 
    ```text
-   Access to my personal Markdown notes. Use it when I ask about my notes, or about something I may have written down. Search is literal text matching, not semantic: try specific words, synonyms, and both English and Japanese terms. You can also save new notes and propose edits, but only as proposals that I review before they change my notes. Save a new note when I ask you to keep something. Propose an edit only when I ask for one and agree to the change. Search and knowledge_list show only my notes, not unmerged proposals; to see proposals, use knowledge_list_proposals, and pass a proposal to knowledge_read. To change something you proposed earlier, revise its proposal instead of starting a new one.
+   Access to my personal Markdown notes. Use it when I ask about my notes, or about something I may have written down. Search is literal text matching, not semantic: try specific words, synonyms, and both English and Japanese terms. You can also save new notes and propose edits, but only as proposals that I review before they change my notes. Save a new note when I ask you to keep something. Propose an edit only when I ask for one and agree to the change. Before you save a note or propose an edit, read AGENTS.md at the root of the vault and follow its note conventions. Search and knowledge_list show only my notes, not unmerged proposals; to see proposals, use knowledge_list_proposals, and pass a proposal to knowledge_read. To change something you proposed earlier, revise its proposal instead of starting a new one.
    ```
 
 2. Sign in as the vault owner when Cloudflare asks.

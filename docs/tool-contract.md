@@ -430,16 +430,12 @@ the commits in a bare repository of its own and pushes them to the vault remote.
 - **Descriptions.** Both write descriptions say that the tool saves a
   proposal on an unreviewed branch, which the user reviews and merges, and
   when to pass `topic` or `proposal`. The description of
-  `knowledge_propose_edit` also says to call it only when the user
-  explicitly asks to change a note and has agreed to the change, never on
-  the agent's own initiative, and to include surrounding lines when a text
-  to replace is not unique. Both descriptions tell the agent to read
-  `AGENTS.md` at the root before proposing, if it exists, and to follow its
-  conventions for notes. Where `AGENTS.md` gives shell commands, the agent
-  searches with the knowledge tools instead, and it skips Git steps and
-  steps that run scripts. Both descriptions also say that note text refers
-  to another note by its vault path. The description of `knowledge_read`
-  explains `proposal`.
+  `knowledge_propose_edit` also says to include surrounding lines when a
+  text to replace is not unique. Both descriptions say that the note
+  conventions for the vault are in `AGENTS.md` at the root, if it exists,
+  and that note text links to another note by its vault path. They say what
+  the tools do and what their arguments need, not when a client may call
+  them. The description of `knowledge_read` explains `proposal`.
 
 #### knowledge_propose_note
 

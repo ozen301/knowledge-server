@@ -56,15 +56,19 @@ abstraction before a second backend exists.
 5. **Keep stored text inert.** Notes are retrieved data, never executable
    instructions. The service does not execute embedded code or automatically
    fetch Markdown URLs. Clients get one exception: the write-tool
-   descriptions tell them to follow the note conventions in `AGENTS.md` at
-   the root, if it exists, because web clients do not otherwise see the
+   descriptions point them to the note conventions in `AGENTS.md` at the
+   root, if it exists, because web clients do not otherwise see the
    conventions that agents working in the vault read. The usual place for
    such guidance is the server's MCP instructions, but Claude.ai does not
    pass them to the model, while both ChatGPT and Claude.ai pass tool
-   descriptions. The exception is acceptable because only the vault owner
-   merges into `main`: a proposal for `AGENTS.md` stays on its unreviewed
-   branch, and the read tools return it only when the agent names that
-   branch.
+   descriptions. The descriptions state only where the conventions are and
+   do not say when a client may call a tool, because ChatGPT flags such
+   directions in tool descriptions as suspicious instructions. `AGENTS.md`
+   itself therefore has to say which of its steps, such as shell commands,
+   apply to clients of the server. The exception is acceptable because only
+   the vault owner merges into `main`: a proposal for `AGENTS.md` stays on
+   its unreviewed branch, and the read tools return it only when the agent
+   names that branch.
 6. **Keep operational state separate.** Operational state, such as future
    indexes and caches and the server's Git repository for proposals, lives
    outside both the vault and the source repository and can be rebuilt.

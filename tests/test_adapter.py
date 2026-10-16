@@ -275,12 +275,10 @@ def test_write_tools_are_served_only_when_enabled(
         assert tool.annotations.read_only_hint is False
         assert tool.annotations.idempotent_hint is False
         assert tool.annotations.open_world_hint is False
-        assert "read AGENTS.md at the root" in tool.description
-        assert "search with the knowledge tools instead" in tool.description
+        assert "are in AGENTS.md at the root" in tool.description
         assert "vault path" in tool.description
     assert tools["knowledge_propose_note"].annotations.destructive_hint is False
     assert tools["knowledge_propose_edit"].annotations.destructive_hint is True
-    assert "never on your own initiative" in tools["knowledge_propose_edit"].description
     assert tools["knowledge_list_proposals"].annotations.read_only_hint is True
     assert "proposal" in tools["knowledge_read"].input_schema["properties"]
 

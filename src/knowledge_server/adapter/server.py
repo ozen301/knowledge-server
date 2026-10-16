@@ -60,11 +60,8 @@ _logger = logging.getLogger(__name__)
 TOOL_FAILURE_FORMAT = "%s failed with %s%s"
 
 _WRITE_GUIDANCE = (
-    " Before proposing, read AGENTS.md at the root with knowledge_read, if it "
-    "exists, and follow its conventions for notes. Where it gives shell "
-    "commands, search with the knowledge tools instead; skip Git steps and "
-    "steps that run scripts. In note text, refer to other notes by their vault "
-    "path."
+    " Note conventions for the vault are in AGENTS.md at the root, if it "
+    "exists. Note text links to other notes by their vault path."
 )
 _SEARCH_DESCRIPTION = (
     "Find lines in the Markdown notes of the knowledge vault that contain any "
@@ -106,9 +103,7 @@ _PROPOSE_EDIT_DESCRIPTION = (
     "content_sha256 as base_sha256. Each old text must occur exactly once in "
     "the text that knowledge_read shows, without line numbers; if it occurs "
     "more than once, include surrounding lines until it is unique. The edits "
-    "apply in order, all or nothing. Call this only when the user explicitly "
-    "asks to change a note and has agreed to the change, never on your own "
-    "initiative." + _WRITE_GUIDANCE
+    "apply in order, all or nothing." + _WRITE_GUIDANCE
 )
 
 
