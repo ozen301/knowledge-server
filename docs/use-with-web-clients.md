@@ -120,8 +120,11 @@ synchronization changes it; do not edit or commit in it.
    checkout every 15 minutes:
 
    ```text
-   */15 * * * * git -C /srv/knowledge-vault pull --ff-only --quiet
+   */15 * * * * git -C /srv/knowledge-vault pull --ff-only --prune --quiet
    ```
+
+   `--prune` removes the checkout's references to branches that were
+   deleted on the vault remote, such as merged proposals.
 
    cron cannot enter a passphrase or password, so your account must reach
    the vault remote without one: with an SSH key without a passphrase, or,
