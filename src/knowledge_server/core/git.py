@@ -37,6 +37,13 @@ SSH_COMMAND = (
     f"ssh -i {VAULT_REMOTE_KEY} -o IdentitiesOnly=yes "
     f"-o BatchMode=yes -o UserKnownHostsFile={KNOWN_HOSTS_FILE}"
 )
+VAULT_REMOTE_CREDENTIALS = "/etc/knowledge-server/vault-remote-credentials"
+# Git runs the helper through the shell and appends the operation. It answers
+# only `get`, with the file's `username=` and `password=` lines, so the token
+# stays out of command lines, the environment, and URLs, and Git can neither
+# store nor erase it. Each call rereads the file, so a new token needs no
+# restart.
+CREDENTIAL_HELPER = f'!f() {{ test "$1" = get && cat {VAULT_REMOTE_CREDENTIALS}; }}; f'
 CHECKOUT_REF = "refs/knowledge/checkout"
 
 
@@ -51,8 +58,9 @@ def run_git(
 ) -> tuple[int, bytes]:
     """Run Git without prompts, with bounded output and a fixed deadline.
 
-    User, system, and inherited Git configuration is excluded. Explicit
-    environment overrides supply the SSH command for remote operations.
+    User, system, and inherited Git configuration and inherited askpass
+    programs are excluded. Explicit environment overrides supply the SSH
+    command or the HTTPS credential settings for remote operations.
     Child processes are killed and reaped on timeout or output overflow.
 
     Returns:
@@ -61,8 +69,12 @@ def run_git(
     Raises:
         KnowledgeError: `GIT_FAILED` if Git cannot run or exceeds a bound.
     """
+    # Git falls back to SSH_ASKPASS for credentials even when terminal
+    # prompts are disabled.
     environment = {
-        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("GIT_", "SSH_ASKPASS"))
     }
     environment.update(
         GIT_CONFIG_NOSYSTEM="1",
@@ -139,8 +151,8 @@ class ProposalBranches:
     Attributes:
         policy: Shared policy for root-relative note paths.
         repository: Bare object store under the server's state directory.
-        vault_remote: SSH URL or absolute path passed explicitly to remote
-            fetches and pushes.
+        vault_remote: SSH or HTTPS URL or absolute path passed explicitly to
+            remote fetches and pushes.
         ssh_command: SSH command for remote operations, or None for local tests.
         limits: Note, read, and listing limits.
         checkout: Top-level of the local vault checkout.
@@ -269,7 +281,8 @@ class ProposalBranches:
         """Copy HEAD and its history into one internal ref without network.
 
         Call under PROPOSAL_LOCK. The longer deadline accommodates the initial
-        history transfer; remote SSH settings are not used for this fetch.
+        history transfer; remote SSH and HTTPS settings are not used for this
+        fetch.
         """
         self.command(
             "-c",
@@ -293,6 +306,18 @@ class ProposalBranches:
         return [f"--receive-pack=git -c {setting} receive-pack"]
 
     def _remote_environment(self) -> dict[str, str] | None:
+        if self.vault_remote.startswith("https://"):
+            # Git applies the helper only to this URL and paths below it, and
+            # does not follow redirects, so no other host or repository can
+            # obtain the token. The launcher accepts only URLs that Git's
+            # normalization leaves unchanged, so the URL is its own scope.
+            return {
+                "GIT_CONFIG_COUNT": "2",
+                "GIT_CONFIG_KEY_0": f"credential.{self.vault_remote}.helper",
+                "GIT_CONFIG_VALUE_0": CREDENTIAL_HELPER,
+                "GIT_CONFIG_KEY_1": "http.followRedirects",
+                "GIT_CONFIG_VALUE_1": "false",
+            }
         return (
             {"GIT_SSH_COMMAND": self.ssh_command}
             if self.ssh_command is not None

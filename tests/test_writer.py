@@ -513,6 +513,134 @@ def test_git_environment_isolation_and_subtree_safe_directory(
             assert command[command.index("-c") + 1] == f"safe.directory={checkout}"
 
 
+HTTPS_REMOTE = "https://git.example.com/owner/notes.git"
+
+
+def test_https_remote_gets_only_scoped_credential_helper(
+    proposal_vault: ProposalVault, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every operation on an HTTPS remote passes the helper, scoped to its URL."""
+    from knowledge_server.core import git as git_module
+
+    checkout, state, remote, git = proposal_vault
+    original = git_module.run_git
+    remote_calls = []
+
+    def local_remote(directory, arguments, **kwargs):
+        if HTTPS_REMOTE in arguments:
+            remote_calls.append((arguments[0], kwargs.get("extra_env")))
+            arguments = [
+                str(remote) if argument == HTTPS_REMOTE else argument
+                for argument in arguments
+            ]
+        else:
+            assert "GIT_CONFIG_COUNT" not in (kwargs.get("extra_env") or {})
+        return original(directory, arguments, **kwargs)
+
+    monkeypatch.setattr(git_module, "run_git", local_remote)
+    store = ProposalBranches(PathPolicy(checkout), HTTPS_REMOTE, state_directory=state)
+    note = _note(store)
+    _edit(
+        store,
+        path="new.md",
+        raw=b"new\n",
+        edits=[TextEdit(old="new", new="re")],
+        proposal=note.proposal,
+    )
+    assert git(remote, "show", f"{note.proposal}:new.md") == b"re\n"
+    listed = store.list_proposals()
+    assert [entry.proposal for entry in listed.proposals] == [note.proposal]
+    store.read(ReadRequest(path="new.md", proposal=note.proposal))
+    assert [command for command, _ in remote_calls] == [
+        "push",
+        "fetch",
+        "push",
+        "fetch",
+        "fetch",
+    ]
+    for _, environment in remote_calls:
+        assert environment == {
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_KEY_0": f"credential.{HTTPS_REMOTE}.helper",
+            "GIT_CONFIG_VALUE_0": git_module.CREDENTIAL_HELPER,
+            "GIT_CONFIG_KEY_1": "http.followRedirects",
+            "GIT_CONFIG_VALUE_1": "false",
+        }
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        HTTPS_REMOTE,
+        "https://git.example.com/owner/notes.git/",
+        "https://git.example.com:8443/owner/my_notes~1.git",
+        "https://[2001:db8::1]:8443/owner/notes.git",
+    ],
+)
+def test_credential_helper_answers_only_the_remote(
+    proposal_vault: ProposalVault, tmp_path: Path, url: str
+) -> None:
+    """The helper serves the configured URL only and Git cannot change the file."""
+    from knowledge_server.core import git as git_module
+
+    checkout, state, _, _ = proposal_vault
+    store = ProposalBranches(PathPolicy(checkout), url, state_directory=state)
+    credentials = tmp_path / "credentials"
+    credentials.write_text("username=owner\npassword=invented-token\n")
+    environment = store._remote_environment()
+    assert environment is not None
+    helper = environment["GIT_CONFIG_VALUE_0"]
+    environment["GIT_CONFIG_VALUE_0"] = helper.replace(
+        git_module.VAULT_REMOTE_CREDENTIALS, str(credentials)
+    )
+    assert environment["GIT_CONFIG_VALUE_0"] != helper
+
+    def credential(action: str, requested: str) -> tuple[int, bytes]:
+        return git_module.run_git(
+            tmp_path,
+            ["credential", action],
+            data=f"url={requested}\n\n".encode(),
+            extra_env=environment,
+        )
+
+    status, output = credential("fill", url)
+    assert status == 0
+    assert b"username=owner\n" in output
+    assert b"password=invented-token\n" in output
+    for other in (
+        "https://git.example.com/owner/other.git",
+        "https://git.example.com:9443/owner/notes.git",
+        "https://other.example.com/owner/notes.git",
+        "http://git.example.com/owner/notes.git",
+    ):
+        status, output = credential("fill", other)
+        assert status != 0
+        assert b"invented-token" not in output
+    for action in ("approve", "reject"):
+        credential(action, url)
+    assert credentials.read_text() == "username=owner\npassword=invented-token\n"
+
+
+def test_git_ignores_inherited_askpass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Missing credentials fail instead of running an inherited askpass program."""
+    from knowledge_server.core import git as git_module
+
+    askpass = tmp_path / "askpass"
+    askpass.write_text("#!/bin/sh\necho invented-answer\n")
+    askpass.chmod(0o755)
+    monkeypatch.setenv("SSH_ASKPASS", str(askpass))
+    monkeypatch.setenv("SSH_ASKPASS_REQUIRE", "force")
+    status, output = git_module.run_git(
+        tmp_path,
+        ["credential", "fill"],
+        data=f"url={HTTPS_REMOTE}\n\n".encode(),
+    )
+    assert status != 0
+    assert b"invented-answer" not in output
+
+
 def test_invalid_proposal_does_not_run_git(
     proposal_vault: ProposalVault, monkeypatch: pytest.MonkeyPatch
 ) -> None:

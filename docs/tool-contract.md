@@ -365,7 +365,7 @@ knowledge_list(path: str = "", offset: int = 0, limit: int = 100)
 ### Write proposals
 
 When its [configuration](http-contract.md#launch-configuration) sets
-`vault_remote`, the vault remote's SSH URL or path, the HTTP entry point serves
+`vault_remote`, the vault remote's URL or path, the HTTP entry point serves
 three proposal tools: `knowledge_propose_note` and `knowledge_propose_edit` save
 proposals, and `knowledge_list_proposals` lists them. A proposal is a branch of
 the vault remote, named `proposal/<topic>-<suffix>`, that holds unreviewed

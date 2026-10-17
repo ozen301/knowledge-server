@@ -10,8 +10,9 @@ The vault owner's authoritative collection of Markdown notes, versioned with
 Git. The term comes from Obsidian, which calls a folder of notes a vault.
 
 **Vault remote**:
-The NAS-hosted Git repository used as the synchronization source for local
-copies of the knowledge vault. It has no checked-out working tree.
+The central Git repository used as the synchronization source for local
+copies of the knowledge vault, such as a bare repository on a NAS or a
+repository on a Git service. It has no checked-out working tree.
 _Avoid_: Local vault checkout, searchable vault
 
 **Local vault checkout**:

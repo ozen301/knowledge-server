@@ -146,8 +146,11 @@ name exists, and a revision only if the branch tip has not moved. One lock
 serializes all proposal operations of the process, including the fetches of
 listing and reading, because they update the same refs. Git runs as a
 subprocess with bounded output, deadlines, and no user or system
-configuration. The [contract](tool-contract.md#write-proposals) gives the
-rules and their order.
+configuration. It reaches the vault remote by path, over SSH with the
+server's key, or over HTTPS with the server's credential file, as the [HTTP
+contract](http-contract.md#launch-modes) describes. The
+[contract](tool-contract.md#write-proposals) gives the rules and their
+order.
 
 ### Literal search: `core/search.py`
 

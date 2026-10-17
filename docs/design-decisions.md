@@ -90,14 +90,14 @@ abstraction before a second backend exists.
    service unit, not only the path policy, keeps the local vault checkout
    read-only.
 
-The server needs write access to the vault remote: an SSH key of the
-service account, or, for a vault remote on a network share mounted on the
-VM, write access to the repository's directory. Neither a plain SSH Git
-remote nor file permissions can limit that access to some branches, so a
-compromised server could change `main`. Unreviewed text also stays in the
-history of the vault remote, its backups, and every clone that fetched a
-proposal branch, even after the branch is deleted. The vault owner accepts
-both risks, so that proposals can be reviewed in any clone with Git alone.
+The server needs write access to the vault remote: an SSH key or an HTTPS
+access token of the service account, or, for a vault remote on a network share
+mounted on the VM, write access to the repository's directory. None of these
+limits that access to some branches, so a compromised server could change
+`main`. Unreviewed text also stays in the history of the vault remote, its
+backups, and every clone that fetched a proposal branch, even after the branch
+is deleted. The vault owner accepts both risks, so that proposals can be
+reviewed in any clone with Git alone.
 
 The design assumes that the vault owner controls the local vault checkout and
 that concurrent edits are trusted. Path checks and symlink rejection protect

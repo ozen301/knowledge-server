@@ -20,9 +20,9 @@ ChatGPT or Claude.ai (via custom connector)
 ```
 
 This guide follows the vault owner's own deployment as an example: an Ubuntu
-26.04 VM, the paths in the table below, a vault remote reached over SSH, and
-synchronization every 15 minutes. The shipped unit,
-`deploy/knowledge-server.service`, fixes the service account,
+26.04 VM, the paths in the table below, a vault remote on a Forgejo Git
+service reached over HTTPS, and synchronization every 15 minutes. The
+shipped unit, `deploy/knowledge-server.service`, fixes the service account,
 `knowledge-server`, the install path, `/opt/knowledge-server`, and the
 configuration path, `/etc/knowledge-server/config.toml`; keep them unless you
 also edit the unit. Choose your own vault checkout path, port, synchronization
@@ -43,6 +43,7 @@ distribution, also adjust the package installation, the Python path, and, if
 | Server's Git repository for write proposals | `/var/lib/knowledge-server/vault.git`, created by the server |
 | Write access to the vault remote (mounted share only) | The unit drop-in `/etc/systemd/system/knowledge-server.service.d/vault-remote.conf` |
 | SSH key for write proposals (SSH only, private) | `/etc/knowledge-server/vault-remote-key`, owned by the service account, and the NAS host key in `/etc/knowledge-server/known_hosts` |
+| Access token for write proposals (HTTPS only, private) | `/etc/knowledge-server/vault-remote-credentials`, owned by the service account |
 | Synchronization | A line in the administrator's crontab |
 | Logs | `journalctl -u knowledge-server`, `journalctl -u cloudflared` |
 | Cloudflare and client settings | The Cloudflare dashboard, and the connector settings in ChatGPT and Claude.ai |
@@ -104,13 +105,13 @@ published route only after the server runs with the owner subject.
 The server reads a dedicated checkout, `/srv/knowledge-vault`. Only the
 synchronization changes it; do not edit or commit in it.
 
-1. Install Git and clone the vault remote with your account:
+1. Install Git and clone the vault remote with your account, with its SSH
+   or HTTPS URL:
 
    ```sh
    sudo apt install git
    sudo install -d -o "$USER" /srv/knowledge-vault
-   git clone ssh://<nas-user>@<nas-host>/<path-to-vault.git> \
-     /srv/knowledge-vault
+   git clone <vault-remote-url> /srv/knowledge-vault
    ```
 
    The default file permissions let the service account read the notes,
@@ -122,9 +123,11 @@ synchronization changes it; do not edit or commit in it.
    */15 * * * * git -C /srv/knowledge-vault pull --ff-only --quiet
    ```
 
-   cron cannot enter a passphrase, so the SSH key for the vault remote must
-   work without one. A key that the NAS limits to reading is safer. [Write
-   proposals](#set-up-write-proposals) over SSH use a separate key.
+   cron cannot enter a passphrase or password, so your account must reach
+   the vault remote without one: with an SSH key without a passphrase, or,
+   over HTTPS, with a credential that Git stores for your account. Access
+   limited to reading is safer. [Write proposals](#set-up-write-proposals)
+   use separate credentials.
 
 ### Install the server
 
@@ -206,11 +209,13 @@ themselves. The server creates the commits in a Git repository of its own,
 `/var/lib/knowledge-server/vault.git`, which it creates at startup, and
 pushes them to the vault remote.
 
-The server reaches the vault remote in one of two ways. If the VM mounts the
-NAS share that holds the vault remote, the server can push to its path, and
-needs no SSH key and no SSH access to the NAS. Otherwise it pushes over SSH
-with a key of its own. Give the server access as one of the next two sections
-describes, and then [configure write proposals](#configure-write-proposals).
+The server reaches the vault remote in one of three ways. If the VM mounts
+the NAS share that holds the vault remote, the server can push to its path,
+and needs no credentials and no network access to the NAS. Otherwise it
+pushes over SSH with a key of its own, or over HTTPS, as to a Git service
+such as Forgejo, with an access token of its own. Give the server access as
+one of the next three sections describes, and then [configure write
+proposals](#configure-write-proposals).
 
 #### Vault remote on a mounted share
 
@@ -282,18 +287,68 @@ the path nor the target of a symlink in it may be under `/home`, `/root`,
    shows only that the server can read the vault remote; the test note in
    [Connect ChatGPT](#connect-chatgpt) shows that it can push.
 
+#### Vault remote over HTTPS
+
+The steps use Forgejo; other Git services issue similar access tokens. The
+firewall must allow HTTPS from the VM to the Git service, and the service's
+certificate must be valid for the VM's trusted certificates.
+
+1. Create an access token for the server. In Forgejo, open **Settings ->
+   Applications**, generate a token with read and write access to
+   repositories, and copy it. The token can push to every repository of
+   your account.
+2. Store your user name on the Git service and the token in a file that
+   only the service account can read:
+
+   ```sh
+   sudo install -m 600 -o knowledge-server -g knowledge-server /dev/null \
+     /etc/knowledge-server/vault-remote-credentials
+   sudoedit /etc/knowledge-server/vault-remote-credentials
+   ```
+
+   Enter two lines, in Git's credential format:
+
+   ```text
+   username=<git-user>
+   password=<token>
+   ```
+
+   `sudoedit` keeps the file's owner and mode. Do not give the token on a
+   command line, where the shell history can keep it.
+3. Check that the service account can reach the vault remote with the file
+   and the Git settings that the server uses:
+
+   ```sh
+   sudo -u knowledge-server env GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 \
+     git -C / -c http.followRedirects=false \
+     -c 'credential.https://<git-host>/<path-to-vault.git>.helper=!f() { test "$1" = get && cat /etc/knowledge-server/vault-remote-credentials; }; f' \
+     ls-remote https://<git-host>/<path-to-vault.git> main
+   ```
+
+   Use the same URL in both places. Ubuntu's default `sudo` settings keep your
+   environment, such as `SSH_ASKPASS`, out of the command, as the server keeps
+   it out of Git. Expected result: one line with a commit ID and
+   `refs/heads/main`. An error means that the file, the token, or the URL is
+   wrong; a redirect, for example after a repository rename, also fails, so
+   use the URL that the redirect names. The check shows only that the server
+   can read the vault remote; the test note in [Connect
+   ChatGPT](#connect-chatgpt) shows that it can push.
+
 #### Configure write proposals
 
 Add one of these lines to `/etc/knowledge-server/config.toml` with
-`sudoedit`, for a mounted share or for SSH:
+`sudoedit`, for a mounted share, SSH, or HTTPS:
 
 ```toml
 vault_remote = "<vault-remote-path>"
 vault_remote = "ssh://<nas-user>@<nas-host>/<path-to-vault.git>"
+vault_remote = "https://<git-host>/<path-to-vault.git>"
 ```
 
 For SSH, use the URL that you checked, in the `ssh://` form; the server
-rejects the short form `<nas-user>@<nas-host>:<path>`. Run
+rejects the short form `<nas-user>@<nas-host>:<path>`. For HTTPS, use the
+URL that you checked, without a user name; with one, Git does not use the
+credential file, so the server rejects it. Run
 `sudo systemctl restart knowledge-server`, and repeat the `curl` check of
 [Install the server](#install-the-server) step 5. If it fails, look for a
 `startup category=...` line in `journalctl -u knowledge-server -n 20`, and
@@ -303,6 +358,10 @@ every few seconds, so the unit can look active while it fails.
 To disable writing, remove the `vault_remote` line, and the drop-in if you
 added one, run `sudo systemctl daemon-reload`, and restart the server. You
 can then delete `/var/lib/knowledge-server/vault.git`.
+
+The server finds proposals only on the configured vault remote. If you move
+the vault remote, push the open `proposal/*` branches from the old one to
+the new one before you change `vault_remote`.
 
 ### Install the tunnel connector
 
@@ -530,6 +589,12 @@ update, run `git -C /opt/knowledge-server switch main` before the pull.
 - **The server's vault remote key,** for write proposals over SSH. It is in
   `/etc/knowledge-server/vault-remote-key`, readable only by the service
   account. To revoke it, remove its public key from the NAS.
+- **The server's access token,** for write proposals over HTTPS. It is in
+  `/etc/knowledge-server/vault-remote-credentials`, readable only by the
+  service account. To rotate it, create a new token, replace the
+  `password=` line with `sudoedit`, and delete the old token in the Git
+  service. The server reads the file for each fetch and push, so it needs no
+  restart. To revoke the token, delete it in the Git service.
 - **Access values.** The values in `/etc/knowledge-server/config.toml` are
   private identifiers, not credentials. To change them, edit the file with
   `sudoedit`, restart the server, and repeat the `curl` check of [Install the
@@ -543,8 +608,8 @@ No OAuth token is stored in the VM.
 
 | Symptom | Check |
 |---|---|
-| `startup category=...` in the server log | The [log policy](http-contract.md#logging) names the cause. `writable-root` means the server was started outside its unit, for example by hand from your account. `configuration` right after you enable write proposals means that `vault_remote` is neither an absolute path nor in the `ssh://` form, or that the installed version is older than proposal branches; [update the server](#update-the-server). `vault-remote` means that the server could not prepare its own Git repository: check that the installed unit has `StateDirectory=knowledge-server` and that the service account can read the vault checkout, including its `.git` directory. |
-| A proposal tool returns `GIT_FAILED` | For a [mounted share](#vault-remote-on-a-mounted-share), check that it is mounted, and repeat the check of step 2. For [SSH](#vault-remote-over-ssh), repeat the check of step 3, and check that the NAS gives the key push access. If the access is right, the server's own repository may be damaged, for example after a full disk. Run `sudo systemctl stop knowledge-server`, `sudo rm -r /var/lib/knowledge-server`, and `sudo systemctl start knowledge-server`; the start rebuilds the repository. Proposals that were pushed are on the vault remote and stay unchanged. |
+| `startup category=...` in the server log | The [log policy](http-contract.md#logging) names the cause. `writable-root` means the server was started outside its unit, for example by hand from your account. `configuration` right after you enable write proposals means that `vault_remote` is not an absolute path, an `ssh://` URL, or an `https://` URL in the [allowed form](http-contract.md#launch-configuration), or that the installed version is older than proposal branches; [update the server](#update-the-server). `vault-remote` means that the server could not prepare its own Git repository: check that the installed unit has `StateDirectory=knowledge-server` and that the service account can read the vault checkout, including its `.git` directory. |
+| A proposal tool returns `GIT_FAILED` | For a [mounted share](#vault-remote-on-a-mounted-share), check that it is mounted, and repeat the check of step 2. For [SSH](#vault-remote-over-ssh), repeat the check of step 3, and check that the NAS gives the key push access. For [HTTPS](#vault-remote-over-https), repeat the check of step 3, and check that the token still exists and can write to repositories. If the access is right, the server's own repository may be damaged, for example after a full disk. Run `sudo systemctl stop knowledge-server`, `sudo rm -r /var/lib/knowledge-server`, and `sudo systemctl start knowledge-server`; the start rebuilds the repository. Proposals that were pushed are on the vault remote and stay unchanged. |
 | 401 with `event category=key-fetch-failed` | The VM cannot reach `https://<team>.cloudflareaccess.com`. After a failure, the server waits 30 seconds before it fetches again. |
 | 401 with only `event category=assertion-rejected` | `team_domain`, `audience`, or `owner_subject` does not match the Access application, or another identity sent the request. |
 | 421 | **HTTP Host Header** in the tunnel route is not `public_host`. |

@@ -809,7 +809,7 @@ def test_explicit_launch_configuration_and_guard(
 
 
 def test_vault_remote_setting(tmp_path: Path) -> None:
-    """Only an SSH URL or absolute path in vault mode enables proposal access."""
+    """Only an SSH or HTTPS URL or an absolute path in vault mode enables proposals."""
     root = tmp_path / "invented"
     shutil.copytree(FIXTURES, root)
     path = tmp_path / "config.toml"
@@ -822,6 +822,11 @@ def test_vault_remote_setting(tmp_path: Path) -> None:
         "ssh://git@[2001:db8::1]:22/notes.git",
         "ssh://git@vault.example.com/日本語.git",
         "ssh://git@vault.example.com:/notes.git",
+        "https://git.example.com/owner/notes.git",
+        "https://git.example.com:8443/owner/notes.git",
+        "https://[2001:db8::1]/notes.git",
+        "https://git.example.com/owner/notes.git/",
+        "https://git.example.com/owner/my_notes~1.git",
         "/tmp/local.git",
         "/mnt/share/git/日本語.git",
     ):
@@ -847,7 +852,28 @@ def test_vault_remote_setting(tmp_path: Path) -> None:
                 "/tmp/a b.git",
                 "/tmp/a\nb.git",
                 "git@vault.example.com:notes.git",
-                "https://git@vault.example.com/notes.git",
+                "http://git.example.com/owner/notes.git",
+                "HTTPS://git.example.com/owner/notes.git",
+                "https://owner@git.example.com/owner/notes.git",
+                "https://@git.example.com/owner/notes.git",
+                "https://owner:token@git.example.com/owner/notes.git",
+                "https://owner:@git.example.com/owner/notes.git",
+                "https://git.example.com",
+                "https://git.example.com/",
+                "https://git.example.com:0/owner/notes.git",
+                "https://git.example.com:65536/owner/notes.git",
+                "https://git.example.com/owner/notes.git?token=x",
+                "https://git.example.com/owner/notes.git#x",
+                "git::https://git.example.com/owner/notes.git",
+                "https://git.example.com/owner/日本語.git",
+                "https://git.example.com/owner/a=b.git",
+                "https://git.example.com/owner/a%3Db.git",
+                "https://git.example.com/owner/a%2Fb.git",
+                "https://git.example.com/owner/a+b.git",
+                "https://git.example.com/owner/notes.git//",
+                "https://git.example.com//owner/notes.git",
+                "https://git.example.com/owner//notes.git",
+                "https://git_example.com/owner/notes.git",
                 "SSH://git@vault.example.com/notes.git",
                 "ssh://vault.example.com/notes.git",
                 "ssh://@vault.example.com/notes.git",

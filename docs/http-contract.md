@@ -44,7 +44,7 @@ explicit TOML file, given by absolute path, of at most 16 KiB. It ignores
 | `public_host` | required | The public MCP hostname, in lowercase, with at least one dot and at most 253 characters, without a scheme or port. |
 | `port` | `8000` | The loopback listener port, 1–65535. |
 | `allowed_origins` | `[]` | Exact `Origin` values: `http` or `https`, a host, and an optional port; no path (not even `/`), query, fragment, credentials, or wildcard. |
-| `vault_remote` | none | The vault remote: an SSH URL, `ssh://<user>@<host>[:<port>]/<path>`, with no password, query, or fragment, or an absolute path. Setting it serves the proposal tools; it is valid only in `vault` mode. |
+| `vault_remote` | none | The vault remote: an SSH URL, `ssh://<user>@<host>[:<port>]/<path>`, with no password; an HTTPS URL, `https://<host>[:<port>]/<path>`, with no user name or password; or an absolute path. A URL must not have a query or fragment. Setting it serves the proposal tools; it is valid only in `vault` mode. |
 
 `root` follows the [same rules as
 `KNOWLEDGE_ROOT`](tool-contract.md#configuration-and-common-policy). The
@@ -52,7 +52,11 @@ values of `team_domain`, `audience`, `owner_subject`, and `public_host`, and
 each entry in `allowed_origins`, must be 1–1024 characters long, must not
 start or end with whitespace, and must not contain spaces, ASCII control
 characters, or DEL. `vault_remote` must not contain whitespace or control
-characters, and an IPv6 host is written in brackets. An unknown field or a
+characters, and an IPv6 host is written in brackets. In an HTTPS URL, a host
+name consists of ASCII letters, digits, `.`, and `-`, and the path of one or
+more non-empty segments of ASCII letters, digits, `-`, `.`, `_`, and `~`, with
+at most one trailing slash. Git selects a credential helper by a normalized
+form of the URL, which other forms would not match. An unknown field or a
 missing or invalid value stops startup with a fixed diagnostic.
 
 ## Launch modes
@@ -88,6 +92,18 @@ clients](use-with-web-clients.md#vault-remote-over-ssh) installs. When it pushes
 remote given as a path, the server names the path in Git's `safe.directory`,
 so that Git accepts the repository when another account owns it, as on a
 network share.
+
+Fetches and pushes over HTTPS check the Git service's certificate against the
+system's trusted certificates. They authenticate with the user name and access
+token in `/etc/knowledge-server/vault-remote-credentials`, which holds two
+lines in Git's credential format, `username=<user>` and `password=<token>`, as
+the [guide for web clients](use-with-web-clients.md#vault-remote-over-https)
+describes. A Git credential helper passes the file to Git only for the
+`vault_remote` URL and paths below it, and HTTPS operations do not follow
+redirects, so no other host or repository receives the token. The helper
+ignores Git's requests to store or erase credentials. Git reads the file again for each fetch and push, so a changed
+token takes effect without a restart. The token never appears in a command
+line, an environment variable, a URL, or a log.
 
 ## Synthetic guard
 

@@ -10,7 +10,8 @@ owner_subject = "<verified-owner-sub>"
 public_host = "mcp.example.com"
 port = 8000
 allowed_origins = []
-# To enable write proposals in vault mode, add the vault remote's SSH URL or,
-# for a vault remote on a mounted share, its absolute path:
+# To enable write proposals in vault mode, add the vault remote's SSH or HTTPS
+# URL or, for a vault remote on a mounted share, its absolute path:
 # vault_remote = "ssh://<nas-user>@<nas-host>/<path-to-vault-remote>"
+# vault_remote = "https://<git-host>/<path-to-vault-remote>"
 # vault_remote = "/absolute/path/to/vault-remote.git"

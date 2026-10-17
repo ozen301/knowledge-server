@@ -14,6 +14,12 @@ _DOMAIN = re.compile(
     r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\Z"
 )
 _TEAM = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.cloudflareaccess\.com\Z")
+# Git matches the credential helper's scope after normalizing the URL, so an
+# HTTPS vault remote may use only characters and paths that it keeps.
+_HTTPS_REMOTE = re.compile(
+    r"https://(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(?::[0-9]*)?"
+    r"(?:/[A-Za-z0-9._~-]+)+/?"
+)
 
 
 def _text(value: object) -> bool:
@@ -155,18 +161,22 @@ def _vault_remote(value: object) -> bool:
         return False
     if value.startswith("/"):
         return True
-    if (
+    # SSH needs a user name. HTTPS takes it from the credential file instead:
+    # with a user name in the URL, Git cannot use the credential helper.
+    if not (
         re.fullmatch(
             r"ssh://[^:/@?#]+@(?:\[[^\[\]]+\]|[^:/@?#]+)(?::[0-9]*)?/[^?#]+", value
         )
-        is None
+        or _HTTPS_REMOTE.fullmatch(value)
     ):
         return False
     try:
         parsed = urlsplit(value)
         return (
-            bool(parsed.username)
-            and ":" not in parsed.username
+            (
+                parsed.scheme == "https"
+                or (bool(parsed.username) and ":" not in parsed.username)
+            )
             and parsed.password is None
             and bool(parsed.hostname)
             and (parsed.port is None or 1 <= parsed.port <= 65535)
@@ -185,8 +195,8 @@ class LaunchConfig:
             the mode's startup check to `root`.
         root: Resolved absolute path to the directory that the tools expose.
         http: The validated transport and authorization settings.
-        vault_remote: SSH URL or absolute path of the vault remote; enables
-            proposal tools and is valid only in vault mode.
+        vault_remote: SSH or HTTPS URL or absolute path of the vault remote;
+            enables proposal tools and is valid only in vault mode.
     """
 
     mode: LaunchMode
@@ -200,8 +210,9 @@ def load_launch_config(path: Path) -> LaunchConfig:
 
     The file must set `mode` to `"synthetic"` or `"vault"`, `root`, and the
     required `HTTPConfig` fields; unknown fields are rejected, and no mode is
-    assumed. The optional `vault_remote`, an SSH URL or an absolute path,
-    enables proposal tools and is valid only in `vault` mode.
+    assumed. The optional `vault_remote`, an SSH URL with a user name, an
+    HTTPS URL without one, or an absolute path, enables proposal tools and is
+    valid only in `vault` mode.
     `KNOWLEDGE_ROOT` and `.env` files are not read, but `root`
     passes the same validation as `KNOWLEDGE_ROOT`.
 
