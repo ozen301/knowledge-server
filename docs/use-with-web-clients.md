@@ -297,9 +297,10 @@ firewall must allow HTTPS from the VM to the Git service, and the service's
 certificate must be valid for the VM's trusted certificates.
 
 1. Create an access token for the server. In Forgejo, open **Settings ->
-   Applications**, generate a token with read and write access to
-   repositories, and copy it. The token can push to every repository of
-   your account.
+   Applications** and generate a token. Under repository access, choose
+   **Specific repositories** and select the vault remote; otherwise the
+   token can push to every repository of your account. Give it read and
+   write access to repositories, and copy it.
 2. Store your user name on the Git service and the token in a file that
    only the service account can read:
 
