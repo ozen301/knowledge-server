@@ -97,7 +97,8 @@ limits that access to some branches, so a compromised server could change
 `main`. Unreviewed text also stays in the history of the vault remote, its
 backups, and every clone that fetched a proposal branch, even after the branch
 is deleted. The vault owner accepts both risks, so that proposals can be
-reviewed in any clone with Git alone.
+reviewed in any clone with Git alone. The synchronization uses the same
+access, outside the unit, so the first risk covers its cron job too.
 
 The design assumes that the vault owner controls the local vault checkout and
 that concurrent edits are trusted. Path checks and symlink rejection protect
@@ -222,12 +223,15 @@ communicate over loopback; the [guide for web
 clients](use-with-web-clients.md) installs and operates them. No containers
 or hypervisor-specific configuration are needed.
 
-- **Synchronization.** A cron job of the vault owner's account fast-forwards
-  a dedicated checkout, so synchronization stays under the vault owner's
-  control, and a diverged history stops the pull instead of merging. The
-  server only reads the checkout. A bare Git remote alone cannot serve as
-  the readable collection. Add snapshot machinery only for a demonstrated
-  need.
+- **Synchronization.** A cron job of the service account fast-forwards a
+  dedicated checkout, and a diverged history stops the pull instead of
+  merging. The job uses the server's own access to the vault remote, so the
+  VM needs no second credential, and the pull does not depend on how the
+  vault owner's account stores its credentials, which may need a terminal.
+  The service account owns the checkout, so the unit's read-only file
+  system, not file permissions, keeps the server from writing there. A
+  bare Git remote alone cannot serve as the readable collection. Add
+  snapshot machinery only for a demonstrated need.
 - **Merging proposals.** The server only reads the local vault checkout, so
   it creates proposal commits in a bare Git repository of its own and pushes
   them to the vault remote. It copies the checkout's history into that

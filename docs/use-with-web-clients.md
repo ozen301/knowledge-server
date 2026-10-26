@@ -39,12 +39,12 @@ distribution, also adjust the package installation, the Python path, and, if
 | Server configuration (private) | `/etc/knowledge-server/config.toml` |
 | Server unit | `/etc/systemd/system/knowledge-server.service`, from `deploy/` |
 | cloudflared unit and tunnel token | Created by `cloudflared service install`; the token is in a root-only file in `/etc/cloudflared` |
-| Vault checkout | `/srv/knowledge-vault`, owned by the administrator's account |
+| Vault checkout | `/srv/knowledge-vault`, owned by the service account |
 | Server's Git repository for write proposals | `/var/lib/knowledge-server/vault.git`, created by the server |
 | Write access to the vault remote (mounted share only) | The unit drop-in `/etc/systemd/system/knowledge-server.service.d/vault-remote.conf` |
 | SSH key for write proposals (SSH only, private) | `/etc/knowledge-server/vault-remote-key`, owned by the service account, and the NAS host key in `/etc/knowledge-server/known_hosts` |
 | Access token for write proposals (HTTPS only, private) | `/etc/knowledge-server/vault-remote-credentials`, owned by the service account |
-| Synchronization | A line in the administrator's crontab |
+| Synchronization | A line in the service account's crontab |
 | Logs | `journalctl -u knowledge-server`, `journalctl -u cloudflared` |
 | Cloudflare and client settings | The Cloudflare dashboard, and the connector settings in ChatGPT and Claude.ai |
 
@@ -103,34 +103,20 @@ published route only after the server runs with the owner subject.
 ### Set up the vault checkout
 
 The server reads a dedicated checkout, `/srv/knowledge-vault`. Only the
-synchronization changes it; do not edit or commit in it.
+synchronization changes it; do not edit or commit in it. Clone it with your
+account now. After the server has its own access to the vault remote,
+[Synchronize the vault checkout](#synchronize-the-vault-checkout) gives the
+checkout to the service account, which keeps it up to date.
 
-1. Install Git and clone the vault remote with your account, with its SSH
-   or HTTPS URL:
+Install Git and clone the vault remote with its path, SSH URL, or HTTPS URL:
 
-   ```sh
-   sudo apt install git
-   sudo install -d -o "$USER" /srv/knowledge-vault
-   git clone <vault-remote-url> /srv/knowledge-vault
-   ```
+```sh
+sudo apt install git
+sudo install -d -o "$USER" /srv/knowledge-vault
+git clone <vault-remote-url> /srv/knowledge-vault
+```
 
-   The default file permissions let the service account read the notes,
-   and the unit keeps them read-only for the server.
-2. Add this line to your crontab with `crontab -e`, to fast-forward the
-   checkout every 15 minutes:
-
-   ```text
-   */15 * * * * git -C /srv/knowledge-vault pull --ff-only --prune --quiet
-   ```
-
-   `--prune` removes the checkout's references to branches that were
-   deleted on the vault remote, such as merged proposals.
-
-   cron cannot enter a passphrase or password, so your account must reach
-   the vault remote without one: with an SSH key without a passphrase, or,
-   over HTTPS, with a credential that Git stores for your account. Access
-   limited to reading is safer. [Write proposals](#set-up-write-proposals)
-   use separate credentials.
+The default file permissions let the service account read the notes.
 
 ### Install the server
 
@@ -361,11 +347,71 @@ every few seconds, so the unit can look active while it fails.
 
 To disable writing, remove the `vault_remote` line, and the drop-in if you
 added one, run `sudo systemctl daemon-reload`, and restart the server. You
-can then delete `/var/lib/knowledge-server/vault.git`.
+can then delete `/var/lib/knowledge-server/vault.git`. Keep the server's
+access to the vault remote: the synchronization uses it.
 
 The server finds proposals only on the configured vault remote. If you move
 the vault remote, push the open `proposal/*` branches from the old one to
-the new one before you change `vault_remote`.
+the new one before you change `vault_remote`. Then run
+`sudo -u knowledge-server git -C /srv/knowledge-vault remote set-url origin <new-url>`,
+and repeat steps 2 and 3 of [Synchronize the vault
+checkout](#synchronize-the-vault-checkout).
+
+### Synchronize the vault checkout
+
+A cron job of the service account fast-forwards the checkout with the
+server's access to the vault remote. cron cannot enter a passphrase or
+password; the server's key and token need none. A new proposal starts from
+the checkout's commit, so the checkout must stay current.
+
+1. Give the checkout to the service account:
+
+   ```sh
+   sudo chown -R knowledge-server: /srv/knowledge-vault
+   ```
+
+   The unit still keeps the checkout read-only for the server. From now on,
+   run Git in the checkout as the service account, with
+   `sudo -u knowledge-server`.
+2. Let Git in the checkout use the server's access. For a mounted share,
+   skip this step. For SSH:
+
+   ```sh
+   sudo -u knowledge-server git -C /srv/knowledge-vault config core.sshCommand \
+     'ssh -i /etc/knowledge-server/vault-remote-key -o IdentitiesOnly=yes -o BatchMode=yes -o UserKnownHostsFile=/etc/knowledge-server/known_hosts'
+   ```
+
+   For HTTPS, with the URL that you cloned:
+
+   ```sh
+   sudo -u knowledge-server git -C /srv/knowledge-vault config http.followRedirects false
+   sudo -u knowledge-server git -C /srv/knowledge-vault config \
+     'credential.https://<git-host>/<path-to-vault.git>.helper' \
+     '!f() { test "$1" = get && cat /etc/knowledge-server/vault-remote-credentials; }; f'
+   ```
+
+   As in the server, Git gives the token only to that URL and does not
+   follow redirects to another one.
+3. Check the pull:
+
+   ```sh
+   sudo -u knowledge-server git -C /srv/knowledge-vault pull --ff-only --prune
+   ```
+
+   Expected result: `Already up to date.` or a fast-forward. An error means
+   that the access or the URL is wrong. Compare the checkout's URL, from
+   `sudo -u knowledge-server git -C /srv/knowledge-vault remote get-url origin`,
+   with the URL of the access check for write proposals.
+4. Add this line to the service account's crontab with
+   `sudo crontab -u knowledge-server -e`, to fast-forward the checkout every
+   15 minutes:
+
+   ```text
+   */15 * * * * git -C /srv/knowledge-vault pull --ff-only --prune --quiet
+   ```
+
+   `--prune` removes the checkout's references to branches that were
+   deleted on the vault remote, such as merged proposals.
 
 ### Install the tunnel connector
 
@@ -448,7 +494,7 @@ Claude.ai instructions.
 | Show status | `systemctl status knowledge-server cloudflared` |
 | Show recent server log lines | `journalctl -u knowledge-server -n 50` |
 | Stop, start, or restart | `sudo systemctl stop knowledge-server` (or `start`, `restart`; or `cloudflared`) |
-| Synchronize now | `git -C /srv/knowledge-vault pull --ff-only` |
+| Synchronize now | `sudo -u knowledge-server git -C /srv/knowledge-vault pull --ff-only --prune` |
 
 The server log has one line per request, with the method, status, and
 latency, and the fixed startup and event lines that the [log
@@ -471,13 +517,18 @@ nothing while the services are stopped. To resume, run
 
 ### Synchronization
 
-The next tool call sees pulled files; no restart is needed. A pull fails
-instead of merging when the remote history has diverged, for example after a
-rewrite. Then reset the checkout:
+The next tool call sees pulled files; no restart is needed. cron discards
+the output of a failed pull unless the VM delivers mail, so a failure is
+silent: new notes do not appear, and new proposals start from an old
+`main`. Then synchronize now with the command in the table above; its error
+names the cause.
+
+A pull fails instead of merging when the remote history has diverged, for
+example after a rewrite. Then reset the checkout:
 
 ```sh
-git -C /srv/knowledge-vault fetch
-git -C /srv/knowledge-vault reset --hard '@{upstream}'
+sudo -u knowledge-server git -C /srv/knowledge-vault fetch
+sudo -u knowledge-server git -C /srv/knowledge-vault reset --hard '@{upstream}'
 ```
 
 **Warning:** The reset discards commits and changes that exist only in the
@@ -588,17 +639,18 @@ update, run `git -C /opt/knowledge-server switch main` before the pull.
   replace it, rotate it in the dashboard, run
   `sudo cloudflared service uninstall`, and then run the new installation
   command; `service install` does not replace an existing service.
-- **Your vault remote key.** The synchronization uses it; it is in your
-  `~/.ssh`.
-- **The server's vault remote key,** for write proposals over SSH. It is in
+- **The server's vault remote key,** for write proposals and
+  synchronization over SSH. It is in
   `/etc/knowledge-server/vault-remote-key`, readable only by the service
-  account. To revoke it, remove its public key from the NAS.
-- **The server's access token,** for write proposals over HTTPS. It is in
-  `/etc/knowledge-server/vault-remote-credentials`, readable only by the
-  service account. To rotate it, create a new token, replace the
-  `password=` line with `sudoedit`, and delete the old token in the Git
-  service. The server reads the file for each fetch and push, so it needs no
-  restart. To revoke the token, delete it in the Git service.
+  account. To revoke it, remove its public key from the NAS; this also
+  stops the synchronization.
+- **The server's access token,** for write proposals and synchronization
+  over HTTPS. It is in `/etc/knowledge-server/vault-remote-credentials`,
+  readable only by the service account. To rotate it, create a new token,
+  replace the `password=` line with `sudoedit`, and delete the old token in
+  the Git service. Git reads the file for each fetch, pull, and push, so
+  neither the server nor cron needs a restart. To revoke the token, delete
+  it in the Git service; this also stops the synchronization.
 - **Access values.** The values in `/etc/knowledge-server/config.toml` are
   private identifiers, not credentials. To change them, edit the file with
   `sudoedit`, restart the server, and repeat the `curl` check of [Install the
@@ -612,7 +664,7 @@ No OAuth token is stored in the VM.
 
 | Symptom | Check |
 |---|---|
-| `startup category=...` in the server log | The [log policy](http-contract.md#logging) names the cause. `writable-root` means the server was started outside its unit, for example by hand from your account. `configuration` right after you enable write proposals means that `vault_remote` is not an absolute path, an `ssh://` URL, or an `https://` URL in the [allowed form](http-contract.md#launch-configuration), or that the installed version is older than proposal branches; [update the server](#update-the-server). `vault-remote` means that the server could not prepare its own Git repository: check that the installed unit has `StateDirectory=knowledge-server` and that the service account can read the vault checkout, including its `.git` directory. |
+| `startup category=...` in the server log | The [log policy](http-contract.md#logging) names the cause. `writable-root` means the server was started outside its unit, for example by hand. `configuration` right after you enable write proposals means that `vault_remote` is not an absolute path, an `ssh://` URL, or an `https://` URL in the [allowed form](http-contract.md#launch-configuration), or that the installed version is older than proposal branches; [update the server](#update-the-server). `vault-remote` means that the server could not prepare its own Git repository: check that the installed unit has `StateDirectory=knowledge-server` and that the service account can read the vault checkout, including its `.git` directory. |
 | A proposal tool returns `GIT_FAILED` | For a [mounted share](#vault-remote-on-a-mounted-share), check that it is mounted, and repeat the check of step 2. For [SSH](#vault-remote-over-ssh), repeat the check of step 3, and check that the NAS gives the key push access. For [HTTPS](#vault-remote-over-https), repeat the check of step 3, and check that the token still exists and can write to repositories. If the access is right, the server's own repository may be damaged, for example after a full disk. Run `sudo systemctl stop knowledge-server`, `sudo rm -r /var/lib/knowledge-server`, and `sudo systemctl start knowledge-server`; the start rebuilds the repository. Proposals that were pushed are on the vault remote and stay unchanged. |
 | 401 with `event category=key-fetch-failed` | The VM cannot reach `https://<team>.cloudflareaccess.com`. After a failure, the server waits 30 seconds before it fetches again. |
 | 401 with only `event category=assertion-rejected` | `team_domain`, `audience`, or `owner_subject` does not match the Access application, or another identity sent the request. |

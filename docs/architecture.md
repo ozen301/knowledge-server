@@ -67,9 +67,9 @@ The layers are separate for these reasons:
   The adapter only translates between MCP messages and core calls. Because of
   this, all tools follow the same rules.
 - **The vault is only read.** For proposals, the server writes only in a
-  Git repository of its own, from which it pushes proposal branches. The
-  vault owner synchronizes the local vault checkout with Git and merges
-  proposals outside the server.
+  Git repository of its own, from which it pushes proposal branches. A cron
+  job synchronizes the local vault checkout with Git, and the vault owner
+  merges proposals; both happen outside the server.
 
 ## Components
 
